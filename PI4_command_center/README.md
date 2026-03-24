@@ -2,6 +2,12 @@
 
 This is a sample server that receives an action request and forwards a command to an ESP32 motor node over your local network.
 
+## Architecture context
+
+For system-level communication and future voice-command flow (STT/LLM -> PI4 routing -> ESP32 action over LAN/UDP), see the root repository `README.md`.
+
+This document focuses on PI4 Command Center implementation details: endpoints, config, discovery, mapping, and runtime state.
+
 ## Files
 - `server.py` - HTTP command center proxy server
 - `config.example.json` - action-to-ESP32 mapping example
