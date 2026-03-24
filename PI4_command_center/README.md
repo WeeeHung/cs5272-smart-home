@@ -9,17 +9,19 @@ For system-level communication and future voice-command flow (STT/LLM -> PI4 rou
 This document focuses on PI4 Command Center implementation details: endpoints, config, discovery, mapping, and runtime state.
 
 ## Files
+
 - `server.py` - HTTP command center proxy server
 - `config.example.json` - action-to-ESP32 mapping example
 
 ## 1) Prepare config
 
 ```bash
-cd "/Users/weehungchiam/Documents/NUS_Y4/Sem 2/CS5272 Embedded Software Design/PI4_command_center"
+cd PI4_command_center
 cp config.example.json config.json
 ```
 
 Edit `config.json`:
+
 - set ESP32 IP in `esp32_nodes.motor_a.host`
 - set `discover_subnet` to your LAN (example: `192.168.1.0/24`)
 - keep or change action mappings under `actions`
@@ -47,6 +49,7 @@ curl -X POST "http://127.0.0.1:8080/trigger" \
 ```
 
 If successful, server forwards to ESP32 endpoint:
+
 - `POST http://<esp32_ip>:<esp32_port>/command`
 - body: `{"command":"TURN"}` (or mapped command)
 
@@ -74,6 +77,7 @@ curl -X POST "http://127.0.0.1:8080/trigger-location" \
 ```
 
 Server resolves:
+
 1. location -> node
 2. node -> current IP (presence cache / health probe / sweep)
 3. action -> command
@@ -82,6 +86,7 @@ Server resolves:
 ## Discovery behavior
 
 Before each trigger, server resolves node IP in this order:
+
 1. Recent ESP32 UDP presence broadcast (`ESP32_PRESENCE`) cache
 2. Configured host health probe (`GET /health`)
 3. Subnet sweep over `discover_subnet` probing `GET /health`
@@ -91,6 +96,7 @@ When found, that IP is used as destination for the command.
 ## Expected ESP32 API
 
 Your ESP32 should expose:
+
 - `POST /command`
 - JSON body: `{"command":"TURN" | "LEFT" | "RIGHT" | "CENTER" | "SEQ"}`
 - response: JSON/plain text status
@@ -114,6 +120,7 @@ curl "http://127.0.0.1:8080/nodes"
 ## Persistent state on disk
 
 Server now persists runtime mapping/cache to `state.json` (same folder by default):
+
 - `location_map` (location -> node)
 - `presence_cache` (node -> last seen IP/port/time)
 - `esp32_nodes` (including learned/updated host info)
