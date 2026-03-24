@@ -1,5 +1,7 @@
 #include <ESP32Servo.h>
 #include <WiFi.h>
+#include <WebServer.h>
+#include <WiFiUdp.h>
 
 // SG90 servo signal pin (change if needed)
 static const int SERVO_PIN = 18;
@@ -31,7 +33,15 @@ Servo sg90;
 int currentAngle = ANGLE_CENTER;
 String serialBuffer = "";
 int lastWifiStatus = WL_IDLE_STATUS;
+WebServer httpServer(80);
+WiFiUDP presenceUdp;
+unsigned long lastPresenceMs = 0;
 
+static const unsigned int PRESENCE_PORT = 4210;
+static const unsigned long PRESENCE_INTERVAL_MS = 5000UL;
+static const char* NODE_ID = "motor_a";
+
+// Drive the status LED (green indicator) on boards with direct GPIO LED.
 void setGreenLed(bool on) {
   if (LED_MODE_GPIO == 1) {
     digitalWrite(LED_PIN, on ? LED_ON_LEVEL : LED_OFF_LEVEL);
@@ -47,6 +57,7 @@ void blinkGreen(int times, int onMs, int offMs) {
   }
 }
 
+// Smoothly move to target angle one degree per step.
 void moveServoSmooth(int targetAngle, int stepDelayMs) {
   if (targetAngle < 0) {
     targetAngle = 0;
@@ -70,6 +81,7 @@ void moveServoSmooth(int targetAngle, int stepDelayMs) {
   currentAngle = targetAngle;
 }
 
+// Demonstration sequence used for TURN/SEQ command.
 void runMovementLoopOnce() {
   // Start-of-loop marker
   blinkGreen(2, 120, 120);
@@ -90,6 +102,7 @@ void runMovementLoopOnce() {
   blinkGreen(1, 250, 120);
 }
 
+// Execute one command action and always return to neutral afterwards.
 void runActionAndReturnNeutral(const String &action) {
   // Start marker for a command-triggered action.
   blinkGreen(2, 80, 80);
@@ -116,6 +129,7 @@ void runActionAndReturnNeutral(const String &action) {
   blinkGreen(1, 180, 80);
 }
 
+// Parse and dispatch command-center signals received over serial or HTTP.
 void processCommandCenterSignal(const String &rawCommand) {
   String command = rawCommand;
   command.trim();
@@ -154,6 +168,105 @@ void processCommandCenterSignal(const String &rawCommand) {
   }
 }
 
+// Validate that incoming command is supported by this node.
+bool isKnownCommand(const String &commandUpper) {
+  return commandUpper == "TURN" || commandUpper == "SEQ" || commandUpper == "LEFT" ||
+         commandUpper == "RIGHT" || commandUpper == "CENTER" || commandUpper == "STATUS";
+}
+
+// Minimal parser for {"command":"..."} body without extra dependencies.
+String extractCommandFromJsonBody(const String &body) {
+  const String key = "\"command\"";
+  int keyPos = body.indexOf(key);
+  if (keyPos < 0) {
+    return "";
+  }
+
+  int colonPos = body.indexOf(':', keyPos + key.length());
+  if (colonPos < 0) {
+    return "";
+  }
+
+  int firstQuote = body.indexOf('"', colonPos + 1);
+  if (firstQuote < 0) {
+    return "";
+  }
+
+  int secondQuote = body.indexOf('"', firstQuote + 1);
+  if (secondQuote < 0) {
+    return "";
+  }
+
+  return body.substring(firstQuote + 1, secondQuote);
+}
+
+// HTTP health endpoint for command-center discovery probes.
+void handleHealth() {
+  String json = "{\"ok\":true,\"service\":\"esp32-motor-node\",\"node\":\"";
+  json += NODE_ID;
+  json += "\",\"ip\":\"";
+  json += WiFi.localIP().toString();
+  json += "\"}";
+  httpServer.send(200, "application/json", json);
+}
+
+// HTTP command endpoint for command-center trigger forwarding.
+void handleCommand() {
+  String command = "";
+  if (httpServer.hasArg("plain")) {
+    command = extractCommandFromJsonBody(httpServer.arg("plain"));
+  }
+  if (command.length() == 0 && httpServer.hasArg("command")) {
+    command = httpServer.arg("command");
+  }
+
+  command.trim();
+  command.toUpperCase();
+  if (command.length() == 0) {
+    httpServer.send(400, "application/json", "{\"ok\":false,\"error\":\"missing_command\"}");
+    return;
+  }
+  if (!isKnownCommand(command)) {
+    String err = "{\"ok\":false,\"error\":\"unknown_command\",\"command\":\"";
+    err += command;
+    err += "\"}";
+    httpServer.send(400, "application/json", err);
+    return;
+  }
+
+  processCommandCenterSignal(command);
+  String ok = "{\"ok\":true,\"command\":\"";
+  ok += command;
+  ok += "\"}";
+  httpServer.send(200, "application/json", ok);
+}
+
+// Broadcast periodic presence beacon for fast discovery on local network.
+void broadcastPresenceIfDue() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  const unsigned long now = millis();
+  if (now - lastPresenceMs < PRESENCE_INTERVAL_MS) {
+    return;
+  }
+  lastPresenceMs = now;
+
+  String msg = "ESP32_PRESENCE node=";
+  msg += NODE_ID;
+  msg += " ip=";
+  msg += WiFi.localIP().toString();
+  msg += " port=80";
+
+  presenceUdp.beginPacket("255.255.255.255", PRESENCE_PORT);
+  presenceUdp.print(msg);
+  presenceUdp.endPacket();
+
+  Serial.print("PRESENCE_BROADCAST: ");
+  Serial.println(msg);
+}
+
+// Log Wi-Fi status transitions so connectivity issues are visible.
 void logWifiStatusChange() {
   const int currentStatus = WiFi.status();
   if (currentStatus == lastWifiStatus) {
@@ -170,6 +283,7 @@ void logWifiStatusChange() {
   }
 }
 
+// Read line-delimited serial commands and dispatch when newline arrives.
 void pollSerialCommands() {
   while (Serial.available() > 0) {
     const char c = static_cast<char>(Serial.read());
@@ -211,6 +325,14 @@ void setup() {
   if (lastWifiStatus == WL_CONNECTED) {
     Serial.print("WIFI_STATUS: CONNECTED, IP=");
     Serial.println(WiFi.localIP());
+    httpServer.on("/health", HTTP_GET, handleHealth);
+    httpServer.on("/command", HTTP_POST, handleCommand);
+    httpServer.on("/command", HTTP_GET, handleCommand);
+    httpServer.begin();
+    Serial.println("HTTP_SERVER: LISTENING_ON_PORT=80");
+    presenceUdp.begin(PRESENCE_PORT);
+    Serial.print("PRESENCE: UDP_BROADCAST_PORT=");
+    Serial.println(PRESENCE_PORT);
   } else {
     Serial.print("WIFI_STATUS: NOT_CONNECTED_AFTER_BOOT, CODE=");
     Serial.println(lastWifiStatus);
@@ -233,7 +355,12 @@ void setup() {
 }
 
 void loop() {
+  // Main service loop: network servicing, discovery beacon, and serial commands.
   logWifiStatusChange();
+  if (WiFi.status() == WL_CONNECTED) {
+    httpServer.handleClient();
+    broadcastPresenceIfDue();
+  }
   pollSerialCommands();
   delay(10);
 }

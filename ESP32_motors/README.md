@@ -10,12 +10,12 @@ Use this folder if your toolchain fails on sketch paths with spaces.
 From this folder:
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32s3 .
+arduino-cli compile --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default .
 ```
 
 ## Upload
 ```bash
-arduino-cli upload -p /dev/cu.usbmodemXXXX --fqbn esp32:esp32:esp32s3 .
+arduino-cli upload -p /dev/cu.usbmodemXXXX --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default .
 ```
 
 ## Erase
