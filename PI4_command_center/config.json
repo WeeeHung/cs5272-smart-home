@@ -1,6 +1,6 @@
 {
   "esp32_nodes": {
-    "motor_a": {
+    "motor_b": {
       "host": "192.168.1.50",
       "port": 80,
       "discover_subnet": "192.168.1.0/24"

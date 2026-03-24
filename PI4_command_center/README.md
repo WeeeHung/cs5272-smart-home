@@ -24,6 +24,12 @@ Edit `config.json`:
 python3 server.py --config config.json --host 0.0.0.0 --port 8080
 ```
 
+Optional custom state file path:
+
+```bash
+python3 server.py --config config.json --state-file state.json
+```
+
 ## 3) Trigger action from same LAN
 
 Example request to command center:
@@ -98,3 +104,12 @@ curl "http://127.0.0.1:8080/nodes"
 ```
 
 `/nodes` now also includes the current `location_map`.
+
+## Persistent state on disk
+
+Server now persists runtime mapping/cache to `state.json` (same folder by default):
+- `location_map` (location -> node)
+- `presence_cache` (node -> last seen IP/port/time)
+- `esp32_nodes` (including learned/updated host info)
+
+State is loaded on startup and updated whenever discovery/mapping changes.

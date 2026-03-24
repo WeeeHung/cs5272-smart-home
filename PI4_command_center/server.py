@@ -28,6 +28,7 @@ PRESENCE_CACHE: Dict[str, Dict[str, Any]] = {}
 PRESENCE_LOCK = threading.Lock()
 LOCATION_MAP: Dict[str, str] = {}
 LOCATION_LOCK = threading.Lock()
+STATE_FILE = Path("state.json")
 
 
 def load_config(config_path: Path) -> Dict[str, Any]:
@@ -40,7 +41,57 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     return data
 
 
-def post_json(url: str, payload: Dict[str, Any], timeout_s: float = 3.0) -> Tuple[int, str]:
+def save_state(config: Dict[str, Any], state_path: Path = STATE_FILE) -> None:
+    """Persist presence cache, location mapping, and learned node hosts to disk."""
+    with PRESENCE_LOCK:
+        presence_snapshot = dict(PRESENCE_CACHE)
+    with LOCATION_LOCK:
+        location_snapshot = dict(LOCATION_MAP)
+    nodes_snapshot = dict(config.get("esp32_nodes", {}))
+
+    state_data = {
+        "presence_cache": presence_snapshot,
+        "location_map": location_snapshot,
+        "esp32_nodes": nodes_snapshot,
+        "saved_at": time.time(),
+    }
+    tmp_path = state_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(state_data, indent=2), encoding="utf-8")
+    tmp_path.replace(state_path)
+
+
+def load_state(config: Dict[str, Any], state_path: Path = STATE_FILE) -> None:
+    """Load persisted state from disk into in-memory caches/config."""
+    if not state_path.exists():
+        return
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LOGGER.warning("Failed to load state file %s: %s", state_path, exc)
+        return
+
+    presence_data = data.get("presence_cache", {})
+    if isinstance(presence_data, dict):
+        with PRESENCE_LOCK:
+            PRESENCE_CACHE.clear()
+            PRESENCE_CACHE.update(presence_data)
+
+    location_data = data.get("location_map", {})
+    if isinstance(location_data, dict):
+        with LOCATION_LOCK:
+            LOCATION_MAP.clear()
+            LOCATION_MAP.update(location_data)
+
+    node_data = data.get("esp32_nodes", {})
+    if isinstance(node_data, dict):
+        for node_id, node_cfg in node_data.items():
+            if node_id not in config["esp32_nodes"]:
+                config["esp32_nodes"][node_id] = {}
+            if isinstance(node_cfg, dict):
+                config["esp32_nodes"][node_id].update(node_cfg)
+
+
+def post_json(url: str, payload: Dict[str, Any], timeout_s: float = 12.0) -> Tuple[int, str]:
     """POST JSON and return (status_code, response_body)."""
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -55,6 +106,12 @@ def post_json(url: str, payload: Dict[str, Any], timeout_s: float = 3.0) -> Tupl
             return int(resp.getcode()), response_body
     except urllib.error.HTTPError as exc:
         return int(exc.code), exc.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        return 0, f"upstream_url_error: {exc}"
+    except TimeoutError as exc:
+        return 0, f"upstream_timeout: {exc}"
+    except Exception as exc:
+        return 0, f"upstream_error: {exc}"
 
 
 def get_text(url: str, timeout_s: float = 0.35) -> Tuple[int, str]:
@@ -105,6 +162,7 @@ def presence_listener(bind_host: str = "0.0.0.0", port: int = PRESENCE_PORT) -> 
         node_port = int(parsed.get("port", "80"))
         with PRESENCE_LOCK:
             PRESENCE_CACHE[node] = {"ip": ip, "port": node_port, "updated_at": time.time()}
+        save_state(CommandHandler.config)
         LOGGER.info("Presence update: node=%s ip=%s port=%s", node, ip, node_port)
 
 
@@ -142,6 +200,7 @@ def discover_node_host(node_id: str, node_cfg: Dict[str, Any]) -> str:
             LOGGER.info("Discovered node %s at %s", node_id, ip_text)
             with PRESENCE_LOCK:
                 PRESENCE_CACHE[node_id] = {"ip": ip_text, "port": port, "updated_at": time.time()}
+            save_state(CommandHandler.config)
             return ip_text
     return host
 
@@ -155,6 +214,7 @@ def update_location_mapping(node_id: str, location: str) -> None:
     """Set or replace location->node mapping."""
     with LOCATION_LOCK:
         LOCATION_MAP[normalize_location(location)] = node_id
+    save_state(CommandHandler.config)
 
 
 def get_node_by_location(location: str) -> str:
@@ -309,6 +369,7 @@ class CommandHandler(BaseHTTPRequestHandler):
         self.config["esp32_nodes"][node_id]["port"] = port
 
         update_location_mapping(node_id, location)
+        save_state(self.config)
         self._json_response(
             HTTPStatus.OK,
             {
@@ -365,6 +426,7 @@ class CommandHandler(BaseHTTPRequestHandler):
             return
 
         node["host"] = host
+        save_state(self.config)
         esp32_url = f"http://{host}:{node['port']}/command"
         forward_payload = {"command": action_map.get("command")}
         status_code, body = post_json(esp32_url, forward_payload)
@@ -396,11 +458,20 @@ def main() -> None:
     )
     parser.add_argument("--host", default="0.0.0.0", help="Server bind host")
     parser.add_argument("--port", type=int, default=8080, help="Server bind port")
+    parser.add_argument(
+        "--state-file",
+        default="state.json",
+        help="Path to persistent state JSON (default: state.json)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    global STATE_FILE
+    STATE_FILE = Path(args.state_file)
     cfg = load_config(Path(args.config))
+    load_state(cfg, STATE_FILE)
     CommandHandler.config = cfg
+    save_state(cfg, STATE_FILE)
     threading.Thread(target=presence_listener, daemon=True).start()
 
     server = ThreadingHTTPServer((args.host, args.port), CommandHandler)

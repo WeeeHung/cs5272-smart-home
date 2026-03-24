@@ -1,0 +1,17 @@
+# python cache
+__pycache__/
+
+# arduino cache
+.pio/
+.vscode/
+.idea/
+.DS_Store/
+.env/
+.env.local/
+.env.development.local/
+.env.test.local/
+.env.production.local/
+
+# state and config files
+PI4_command_center/state.json
+PI4_command_center/config.json
