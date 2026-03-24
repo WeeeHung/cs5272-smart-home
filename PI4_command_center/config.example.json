@@ -1,0 +1,22 @@
+{
+  "esp32_nodes": {
+    "motor_a": {
+      "host": "192.168.1.50",
+      "port": 80
+    }
+  },
+  "actions": {
+    "turn_demo": {
+      "node": "motor_a",
+      "command": "TURN"
+    },
+    "left_once": {
+      "node": "motor_a",
+      "command": "LEFT"
+    },
+    "right_once": {
+      "node": "motor_a",
+      "command": "RIGHT"
+    }
+  }
+}
