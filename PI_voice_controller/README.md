@@ -47,12 +47,27 @@ Install the required Python libraries inside your virtual environment:
 ```bash
 pip install openwakeword pyaudio numpy
 ```
-Download your custom hey_homie.tflite wake word model, whisper.cpp binaries, and the tinyllama-1.1b-chat.Q4_K_M.gguf model into your main smarthome directory.
+For OpenWakeWord’s TensorFlow Lite backend (`inference_framework="tflite"` in `voice_controller.py`), install a TFLite-capable runtime on the Pi as well, for example:
+```bash
+pip install tensorflow
+```
+(or use `tflite_runtime` if you prefer a smaller wheel—see the [openWakeWord](https://github.com/dscripka/openWakeWord) install notes for your platform).
 
-Start the Voice Controller loop:
+#### Custom wake word model (`models/hey_homie.tflite`)
+The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord model stored as:
+
+`PI_voice_controller/models/hey_homie.tflite`
+
+- **Placement:** Keep the `.tflite` file in that `models/` folder. `voice_controller.py` resolves the path relative to the script, so you do not need to copy the model into the current working directory.
+- **Naming:** The model basename (without `.tflite`) must match the key used in predictions. The code uses `WAKE_WORD_NAME = "hey_homie"`, so the file should be named `hey_homie.tflite`. If you replace it with another OpenWakeWord export, rename the file or update `WAKE_WORD_NAME` to match.
+- **Detection threshold:** Wake detections fire when the score for `hey_homie` is above `0.5` in `voice_controller.py`; raise it if you get false triggers, or lower it slightly if it misses the phrase.
+
+Download **whisper.cpp** binaries, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model into your main smarthome directory (paths in `voice_controller.py` expect that layout).
+
+Start the Voice Controller loop from the directory where your `whisper.cpp` / `llama.cpp` paths resolve (typically the repository root):
 
 ```bash
-python3 voice_controller.py
+python3 PI_voice_controller/voice_controller.py
 ```
 ## 🧪 Testing the Pipeline
 Before running the full system, test the individual components from your ~/smarthome/ directory to isolate any hardware or software issues.

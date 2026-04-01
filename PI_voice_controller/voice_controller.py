@@ -7,9 +7,9 @@ import pyaudio
 import numpy as np
 from openwakeword.model import Model
 
-# Configuration
-WAKE_WORD_MODEL_PATH = "hey_homie.tflite"
-WAKE_WORD_NAME = "hey_homie" # This matches the filename without the extension
+# Configuration (model lives next to this script under models/)
+WAKE_WORD_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "hey_homie.tflite")
+WAKE_WORD_NAME = "hey_homie"
 
 AUDIO_RATE = 16000
 CHUNK_SIZE = 1280

@@ -1,3 +1,14 @@
+# Connecting to the Raspberry PI
+
+Ping using
+```bash
+ping cs5272-smart-home-ai.local
+```
+and connect using
+```bash
+ssh cs5272smarthome@cs5272-smart-home-ai.local
+```
+
 # Embedded Software Design - System Overview
 
 This repository contains two cooperating components:
