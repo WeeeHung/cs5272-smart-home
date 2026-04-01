@@ -17,8 +17,24 @@ RECORD_SECONDS = 4
 WAV_OUTPUT_FILENAME = "command.wav"
 
 # Paths to Jeremy's compiled binaries and models
-WHISPER_CMD = ["./whisper.cpp/main", "-m", "./whisper.cpp/models/ggml-base.en.bin", "-f", WAV_OUTPUT_FILENAME, "-nt"]
-LLAMA_CMD = ["./llama.cpp/llama-cli", "-m", "./models/tinyllama-1.1b-chat.Q4_K_M.gguf", "-n", "30", "--temp", "0.1", "-p"]
+WHISPER_CMD = [
+    "./whisper.cpp/build/bin/whisper-cli",
+    "-m",
+    "./whisper.cpp/models/ggml-base.en.bin",
+    "-f",
+    WAV_OUTPUT_FILENAME,
+    "-nt",
+]
+LLAMA_CMD = [
+    "./llama.cpp/build/bin/llama-cli",
+    "-m",
+    "./models/tinyllama-1.1b-chat.Q4_K_M.gguf",
+    "-n",
+    "30",
+    "--temp",
+    "0.1",
+    "-p",
+]
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
