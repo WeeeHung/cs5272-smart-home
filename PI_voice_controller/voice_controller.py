@@ -275,7 +275,7 @@ def llama_infer_cmd(model_path):
             "-ngl",
             "0",
             "-n",
-            "128",
+            "64",
             "--temp",
             "0.1",
             # Exit after one -p completion; default llama-cli is interactive REPL (hangs subprocess.run).
@@ -286,21 +286,35 @@ def llama_infer_cmd(model_path):
     return cmd
 
 
-def _extract_json_object_string(text: str):
-    """Prefer first ```json ... ``` fence; else first { ... } span for json.loads."""
+def _parse_first_intent_json(text: str):
+    """
+    First JSON object in text that is a dict with 'location' and 'action'.
+    Uses JSONDecoder.raw_decode so multiple trailing objects or prose do not break parsing.
+    Prefers content inside a ```json ... ``` fence, then scans full text.
+    """
     if not text or not text.strip():
         return None
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    regions = []
     if fence:
-        inner = fence.group(1).strip()
-        start = inner.find("{")
-        end = inner.rfind("}") + 1
-        if start >= 0 and end > start:
-            return inner[start:end]
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start >= 0 and end > start:
-        return text[start:end]
+        regions.append(fence.group(1).strip())
+    regions.append(text)
+
+    dec = json.JSONDecoder()
+    for region in regions:
+        i = 0
+        while True:
+            brace = region.find("{", i)
+            if brace < 0:
+                break
+            try:
+                obj, end = dec.raw_decode(region, brace)
+            except json.JSONDecodeError:
+                i = brace + 1
+                continue
+            if isinstance(obj, dict) and "location" in obj and "action" in obj:
+                return obj
+            i = end
     return None
 
 
@@ -506,8 +520,9 @@ def extract_intent(transcript, locations, actions, llama_model_path):
     print("Extracting intent with TinyLlama...")
     loc_str = ", ".join(str(x) for x in locations)
     act_str = ", ".join(str(x) for x in actions)
-    prompt = f"""You are a smart home parser. Read the user command and output ONLY valid JSON with 'location' and 'action' keys. 
-Available locations: {loc_str}. 
+    prompt = f"""You are a smart home parser. Read the user command and output ONLY valid JSON with 'location' and 'action' keys.
+Output exactly one JSON object on a single line; no examples, no markdown, no explanation.
+Available locations: {loc_str}.
 Available actions: {act_str}.
 Command: "{transcript}"
 JSON Output:"""
@@ -557,15 +572,11 @@ JSON Output:"""
                 "rebuild llama.cpp if the binary is old (needs -ngl / --no-mmap)."
             )
 
-    json_str = _extract_json_object_string(output)
-    if not json_str:
+    intent = _parse_first_intent_json(output)
+    if intent is None:
         print("Failed to parse LLM output into JSON.")
         return None
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        print("Failed to parse LLM output into JSON.")
-        return None
+    return intent
 
 def trigger_actuator(intent, command_center_url):
     print(f"Triggering command center: {intent}")
