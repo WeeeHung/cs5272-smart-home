@@ -39,7 +39,13 @@ _WHISPER_MODEL_CANDIDATES = (
 )
 _WHISPER_MODEL_MIN_BYTES = 1_000_000
 _LLAMA_CLI = os.path.join(_REPO_ROOT, "llama.cpp", "build", "bin", "llama-cli")
-_LLAMA_GGUF = os.path.join(_REPO_ROOT, "models", "tinyllama-1.1b-chat.Q4_K_M.gguf")
+_LLAMA_MODEL_DIR = os.path.join(_REPO_ROOT, "models")
+_LLAMA_MODEL_MIN_BYTES = 50_000_000
+_LLAMA_MODEL_CANDIDATES = (
+    "tinyllama-1.1b-chat.Q4_K_M.gguf",
+    "tinyllama-1.1b-chat-v1.0-q4_k_m.gguf",
+    "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+)
 
 _VOICE_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "config.json")
 _DEFAULT_LOCATIONS = ["living_room", "bedroom"]
@@ -47,16 +53,6 @@ _DEFAULT_ACTIONS = ["turn_demo", "left_once", "right_once"]
 
 # Ignore wake scores briefly after reopening the mic (ALSA pop / transient often false-triggers).
 WAKE_COOLDOWN_S = 0.85
-LLAMA_CMD = [
-    _LLAMA_CLI,
-    "-m",
-    _LLAMA_GGUF,
-    "-n",
-    "30",
-    "--temp",
-    "0.1",
-    "-p",
-]
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
@@ -129,6 +125,8 @@ def _default_voice_config():
         "input_device_index": None,
         # Absolute path to a ggml model, or None: env PI_VOICE_WHISPER_MODEL, then whisper.cpp/models/*.
         "whisper_model_path": None,
+        # Absolute path to TinyLlama (or compatible) .gguf, or None: env PI_VOICE_LLAMA_MODEL, then models/*.
+        "llama_model_path": None,
     }
 
 
@@ -191,6 +189,51 @@ def resolve_whisper_model_path(cfg):
         if os.path.isfile(fp) and os.path.getsize(fp) >= _WHISPER_MODEL_MIN_BYTES:
             return os.path.abspath(fp)
     return None
+
+
+def resolve_llama_model_path(cfg):
+    """
+    Return path to a usable .gguf for llama-cli, or None.
+    Order: PI_VOICE_LLAMA_MODEL, config llama_model_path, known names under repo models/, then any models/tinyllama*.gguf.
+    """
+    env = os.environ.get("PI_VOICE_LLAMA_MODEL", "").strip()
+    if env:
+        env = os.path.expanduser(env)
+        if os.path.isfile(env) and os.path.getsize(env) >= _LLAMA_MODEL_MIN_BYTES:
+            return os.path.abspath(env)
+    p = cfg.get("llama_model_path")
+    if isinstance(p, str) and p.strip():
+        p = os.path.expanduser(p.strip())
+        if os.path.isfile(p) and os.path.getsize(p) >= _LLAMA_MODEL_MIN_BYTES:
+            return os.path.abspath(p)
+    for name in _LLAMA_MODEL_CANDIDATES:
+        fp = os.path.join(_LLAMA_MODEL_DIR, name)
+        if os.path.isfile(fp) and os.path.getsize(fp) >= _LLAMA_MODEL_MIN_BYTES:
+            return os.path.abspath(fp)
+    try:
+        for fn in sorted(os.listdir(_LLAMA_MODEL_DIR)):
+            low = fn.lower()
+            if not low.endswith(".gguf") or "tinyllama" not in low:
+                continue
+            fp = os.path.join(_LLAMA_MODEL_DIR, fn)
+            if os.path.isfile(fp) and os.path.getsize(fp) >= _LLAMA_MODEL_MIN_BYTES:
+                return os.path.abspath(fp)
+    except OSError:
+        pass
+    return None
+
+
+def llama_infer_cmd(model_path):
+    return [
+        _LLAMA_CLI,
+        "-m",
+        model_path,
+        "-n",
+        "30",
+        "--temp",
+        "0.1",
+        "-p",
+    ]
 
 
 def whisper_transcribe_cmd(model_path):
@@ -380,7 +423,7 @@ def transcribe_audio(whisper_model_path):
     print(f"Transcript: {transcript}")
     return transcript
 
-def extract_intent(transcript, locations, actions):
+def extract_intent(transcript, locations, actions, llama_model_path):
     print("Extracting intent with TinyLlama...")
     loc_str = ", ".join(str(x) for x in locations)
     act_str = ", ".join(str(x) for x in actions)
@@ -389,19 +432,30 @@ Available locations: {loc_str}.
 Available actions: {act_str}.
 Command: "{transcript}"
 JSON Output:"""
-    
-    cmd = LLAMA_CMD + [prompt]
+
+    cmd = llama_infer_cmd(llama_model_path) + [prompt]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    output = result.stdout.replace(prompt, "").strip()
+
+    raw_out = (result.stdout or "").strip()
+    output = raw_out.replace(prompt, "").strip()
+    if not output and raw_out:
+        output = raw_out
     print(f"LLM Output: {output}")
-    
+
+    if not output or "Failed to load" in raw_out:
+        err = (result.stderr or "").strip()
+        if err:
+            tail = err[-1200:] if len(err) > 1200 else err
+            print(f"llama-cli stderr (last part): {tail}")
+        if result.returncode != 0:
+            print(f"llama-cli exited with code {result.returncode}")
+
     try:
-        start = output.find('{')
-        end = output.rfind('}') + 1
+        start = output.find("{")
+        end = output.rfind("}") + 1
         json_str = output[start:end]
         return json.loads(json_str)
-    except Exception as e:
+    except Exception:
         print("Failed to parse LLM output into JSON.")
         return None
 
@@ -433,6 +487,20 @@ def main():
         print(f"whisper-cli not found at {_WHISPER_CLI} (build whisper.cpp first).")
         sys.exit(1)
     print(f"Whisper model: {whisper_model}")
+
+    llama_model = resolve_llama_model_path(cfg)
+    if not llama_model:
+        print(
+            "No Llama .gguf model found under\n"
+            f"  {_LLAMA_MODEL_DIR}\n"
+            "Expected TinyLlama ~Q4_K_M (≥50 MiB), e.g. tinyllama-1.1b-chat.Q4_K_M.gguf or\n"
+            "tinyllama-1.1b-chat-v1.0-q4_k_m.gguf. Set \"llama_model_path\" in config.json or PI_VOICE_LLAMA_MODEL."
+        )
+        sys.exit(1)
+    if not os.path.isfile(_LLAMA_CLI):
+        print(f"llama-cli not found at {_LLAMA_CLI} (build llama.cpp first).")
+        sys.exit(1)
+    print(f"Llama model: {llama_model}")
 
     # Initialize OpenWakeWord
     print("Loading wake word model...")
@@ -474,7 +542,9 @@ def main():
                     transcript = transcribe_audio(whisper_model)
 
                     if transcript:
-                        intent = extract_intent(transcript, cfg["locations"], cfg["actions"])
+                        intent = extract_intent(
+                            transcript, cfg["locations"], cfg["actions"], llama_model
+                        )
                         if intent and "location" in intent and "action" in intent:
                             trigger_actuator(intent, cfg["command_center_url"])
                 finally:
