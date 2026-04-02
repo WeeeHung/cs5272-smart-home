@@ -1,117 +1,126 @@
-# Connecting to the Raspberry PI
+# CS5272 Smart Home (Offline Edge Actuator)
 
-Ping using
+This repo is a small end-to-end system with three cooperating parts:
+
+- `PI_voice_controller/`: Raspberry Pi voice/intent pipeline (`voice_controller.py`)
+- `PI4_command_center/`: Raspberry Pi HTTP router + UDP presence/discovery (`server.py`)
+- `ESP32_motors/`: ESP32 actuator firmware (servo movement + HTTP endpoints)
+
+## Connect to the Raspberry Pi
+
+Ping using:
+
 ```bash
 ping cs5272-smart-home-ai.local
 ```
-and connect using
+
+SSH using:
+
 ```bash
 ssh cs5272smarthome@cs5272-smart-home-ai.local
 ```
 
-# Embedded Software Design - System Overview
+## Repo Layout (what each folder contains)
 
-This repository contains two cooperating components:
-- a Raspberry Pi 4 controller node (decision brain),
-- and ESP32 motor node firmware (action executor).
+- `PI_voice_controller/`
+  - `voice_controller.py`: wake-word -> record -> whisper.cpp transcription -> llama.cpp JSON intent -> trigger PI4
+  - `config.example.json`: example config (copy to `config.json` next to the script)
+  - `models/`: bundled wake word model files (currently `hey_homie.*`)
+  - `requirements*.txt`: Python dependencies
+- `PI4_command_center/`
+  - `server.py`: HTTP server + UDP presence listener + location mapping persistence
+  - `config.example.json`: example `esp32_nodes` and `actions` mapping (copy to `config.json`)
+  - `README.md`: PI4 implementation details
+  - `state.json`: persistent runtime state (created automatically by the server)
+- `ESP32_motors/`
+  - `ESP32_motors.ino`: ESP32 firmware (HTTP `/health`, `/command`, and UDP `ESP32_PRESENCE` beacon)
+  - `data/config.json`: Wi-Fi credentials that must be uploaded into ESP32 LittleFS as `/config.json`
+  - `README.md`: build/upload notes
+- `TODO.md`: project TODOs
 
-## Documentation map
+## Current Communication Contracts (routes + payloads)
 
-- `README.md` (this file): system architecture and end-to-end interaction flow.
-- `PI4_command_center/README.md`: PI4 server setup, APIs, discovery, mapping, and runtime state.
-- `ESP32_motors/README.md`: ESP32 firmware behavior, endpoints, and device-side execution details.
+### 1) `PI_voice_controller` -> PI4 Command Center
 
-## 1) Raspberry Pi 4 Node (Controller)
+- HTTP endpoint: `POST http://<pi4>:8080/trigger-location`
+- request body (JSON): `{"location":"<location>","action":"<action_key>"}`
+- what PI4 does with it:
+  - normalizes `location` to lowercase
+  - resolves `location -> node` from its mapping
+  - resolves `action_key -> esp32 command` from `config.json`
+  - discovers a reachable ESP32 host (UDP presence cache, `/health` probe, or subnet sweep)
+  - forwards the actuator command to the ESP32 node
 
-The Raspberry Pi 4 is the local intelligence layer that:
-- runs local speech-to-text (STT),
-- can optionally run local LLM and vision models,
-- decides what physical action to trigger based on input,
-- sends control signals to the corresponding ESP32 node.
+### 2) PI4 Command Center -> ESP32 Motor Node
 
-### Responsibilities
-- **Input processing**: audio (STT), optional camera/image, optional text commands.
-- **Decision logic**: map interpreted intent to an action key.
-- **Routing/configuration**: maintain a configuration of:
-  - which ESP32 corresponds to which action/switch,
-  - how to address each ESP32 (for example by ID/topic/address).
-- **Dispatch**: send trigger signals to the selected ESP32 reliably.
+- PI4 forwards to: `POST http://<esp32_host>:<esp32_port>/command` (ESP32 port is `80` by default)
+- request body (JSON): `{"command":"TURN" | "SEQ" | "LEFT" | "RIGHT" | "CENTER" | "STATUS"}`
+- ESP32 response (JSON): `{"ok":true,"command":"<COMMAND>"}` on success, or an error JSON with status `400` on bad input
 
-## 2) ESP32 Motor Node (Executor)
+- ESP32 health:
+  - `GET http://<esp32_host>:80/health`
+  - response (JSON): `{"ok":true,"service":"esp32-motor-node","node":"<NODE_ID>","ip":"<ip>"}`
 
-The ESP32 motor firmware:
-- supports configurable behavior and pin settings,
-- receives trigger signals from the Raspberry Pi 4,
-- executes motor movement for the requested action,
-- returns the motor to neutral state after action,
-- enters low-power mode while waiting for the next trigger.
+### 3) ESP32 Node Discovery (UDP presence)
 
-### Responsibilities
-- **Configuration**: motor pin, neutral angle, action angles/timing, power mode.
-- **Action execution**: move servo/motor according to received command.
-- **Safe reset**: return to neutral state after each action.
-- **Energy saving**: reduce power draw when idle (for example detach servo/sleep).
+- ESP32 periodically broadcasts UDP to the PI4 network:
+  - payload format (string): `ESP32_PRESENCE node=<NODE_ID> ip=<local_ip> port=80`
+  - UDP port: `4210`
+- PI4 runs a background listener that updates an in-memory presence cache (and persists state)
 
-## High-Level Flow
+## PI4 Command Center HTTP API (what to call from other tools)
 
-1. User input is captured on Raspberry Pi 4 (voice/image/text).
-2. Local models infer intent and resolve an action.
-3. Pi checks action-to-ESP32 mapping.
-4. Pi sends signal to target ESP32.
-5. ESP32 executes movement, returns to neutral, then idles in low-power mode.
+All routes run on the PI4 server created by `PI4_command_center/server.py` (default bind `0.0.0.0:8080`).
 
-## PI4 <-> ESP32 Communication Flow (LAN + UDP)
+- `GET /health`
+  - response: `{"ok":true,"service":"pi4-command-center"}`
+- `GET /nodes`
+  - response includes `nodes` (presence cache with age) and `location_map`
+- `POST /map-location`
+  - request (JSON): `{"node":"motor_a","location":"living_room","host":"<optional_ip>","port":80}`
+  - response: mapping confirmation
+- `POST /trigger-location`
+  - request (JSON): `{"location":"living_room","action":"turn_demo"}`
+  - response: whether the command forwarded successfully and what PI4 sent to the ESP32
+- `POST /trigger`
+  - request (JSON): `{"action":"turn_demo"}`
+  - response: forwards the configured action directly to its configured node
 
-The PI4 Command Center communicates with ESP32 nodes over local network:
-- **LAN/HTTP** for commands (`POST /command`)
-- **UDP presence broadcast** for discovery/IP updates (`ESP32_PRESENCE` to PI4)
+## Configuration files (copy `config.example.json` -> `config.json`)
 
-```mermaid
-flowchart LR
-  U[User]
-  STT[STT on PI4]
-  LLM[LLM Intent Parsing<br/>extract action + location]
-  PI4[PI4 Command Center]
-  MAP[Location and Node Mapping<br/>location -> node -> current IP]
-  ACT[Action Mapping<br/>action -> ESP32 command]
-  LAN[LAN HTTP<br/>POST /command]
-  ESP[ESP32 Node]
-  HW[Motor / Relay / Lights]
-  ACK[Command Result / ACK]
-  UDP[UDP Presence Broadcast<br/>ESP32_PRESENCE]
-  CACHE[PI4 Presence Cache]
+1. `PI4_command_center/config.json`
+   - copy from `PI4_command_center/config.example.json`
+   - defines:
+     - `esp32_nodes.<node_id>.host` (optional; can be discovered)
+     - `esp32_nodes.<node_id>.port` (ESP32 HTTP port; default `80`)
+     - `esp32_nodes.<node_id>.discover_subnet` (used for subnet sweep fallback)
+     - `actions.<action_key>.node` and `actions.<action_key>.command` (command strings like `TURN`, `LEFT`, etc)
 
-  U -- "Set Node A as Kitchen Lights" --> STT
-  U -- "Turn off lights in kitchen" --> STT
-  STT --> LLM --> PI4
-  PI4 --> MAP
-  PI4 --> ACT
-  MAP --> LAN
-  ACT --> LAN
-  LAN --> ESP --> HW
-  ESP --> ACK --> PI4
+2. `PI_voice_controller/config.json`
+   - copy from `PI_voice_controller/config.example.json`
+   - defines:
+     - `command_center_url` (must point to `http://<pi4>:8080/trigger-location`)
+     - the allowed `locations` and `actions` for llama.cpp JSON parsing
+     - wake-word thresholds
 
-  ESP -. periodic .-> UDP -. update IP/last seen .-> CACHE -. resolve target .-> MAP
-```
+3. `ESP32_motors/data/config.json`
+   - this is loaded by the ESP32 firmware from LittleFS at runtime as `/config.json`
+   - update `wifi_ssid` / `wifi_password` in `ESP32_motors/data/config.json`
+   - then upload the filesystem image together with the sketch
 
-### Expected future intent flow
+## Typical Run Order (end-to-end)
 
-1. User says: `Set Node A as Kitchen Lights`
-   - STT transcribes voice.
-   - LLM classifies this as a **mapping intent**.
-   - PI4 stores/updates `node A -> kitchen` mapping.
-
-2. User says: `Turn off lights in kitchen`
-   - STT transcribes voice.
-   - LLM extracts `location=kitchen`, `action=turn_off`.
-   - PI4 resolves `kitchen -> node -> current IP`.
-   - PI4 maps `turn_off -> command` and sends to ESP32 over LAN.
-   - ESP32 executes the hardware behavior and returns status.
-
-### ESP32 action behavior
-
-After receiving a command, ESP32 should:
-1. parse command JSON,
-2. execute mapped actuator behavior (motor/relay/light action),
-3. return success/failure response,
-4. continue UDP presence broadcast so PI4 can rediscover after IP changes.
+1. Flash `ESP32_motors/ESP32_motors.ino` to the ESP32.
+2. Confirm ESP32 is reachable on the LAN:
+   - `GET http://<esp32_ip>/health` should return `service: esp32-motor-node`
+   - (optional) verify UDP beacon by watching PI4 logs after it starts
+3. Start PI4 Command Center:
+   - `cd PI4_command_center`
+   - `python3 server.py --config config.json --host 0.0.0.0 --port 8080`
+4. Create at least one location mapping:
+   - `POST /map-location` with `{"node":"motor_a","location":"living_room",...}`
+5. Start the voice controller:
+   - ensure `whisper.cpp/` and `llama.cpp/` and the models exist under the repo root (as expected by `voice_controller.py`)
+   - `cd <repo_root>`
+   - `cp PI_voice_controller/config.example.json PI_voice_controller/config.json`
+   - `python3 PI_voice_controller/voice_controller.py`
