@@ -49,16 +49,18 @@ The project is split into two main components:
 Install the required Python libraries inside your virtual environment:
 
 ```bash
-pip install openwakeword pyaudio numpy
+pip install -r PI_voice_controller/requirements.txt
 ```
 
-For OpenWakeWord’s TensorFlow Lite backend (`inference_framework="tflite"` in `voice_controller.py`), install a TFLite-capable runtime on the Pi as well, for example:
+That pins **openWakeWord ≥ 0.6.0**. Older releases (sometimes chosen on **Python 3.13**) use a different `Model()` API and crash with `AudioFeatures.__init__() got an unexpected keyword argument 'wakeword_models'`.
+
+For OpenWakeWord’s TFLite path (`inference_framework="tflite"`), recent upstream builds use **LiteRT** (`ai-edge-litert`). If import fails, install it (or use full TensorFlow). Example:
 
 ```bash
-pip install tensorflow
+pip install ai-edge-litert
 ```
 
-(or use `tflite_runtime` if you prefer a smaller wheel—see the [openWakeWord](https://github.com/dscripka/openWakeWord) install notes for your platform).
+(or `pip install tensorflow`—see [openWakeWord](https://github.com/dscripka/openWakeWord) install notes for your platform).
 
 #### Custom wake word model (`models/hey_homie.tflite`)
 
