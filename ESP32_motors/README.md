@@ -18,6 +18,12 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,Uploa
 arduino-cli upload -p /dev/cu.usbmodemXXXX --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default .
 ```
 
+or
+```bash
+arduino-cli board list
+arduino-cli upload --port /dev/cu.usbmodemXXXX --fqbn 'esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default' .
+```
+
 ## Erase
 ```bash
 python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX --baud 460800 erase_flash

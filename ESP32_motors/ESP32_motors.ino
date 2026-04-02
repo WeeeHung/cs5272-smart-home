@@ -7,8 +7,8 @@
 static const int SERVO_PIN = 18;
 
 // Wi-Fi credentials (hardcoded as requested)
-static const char* WIFI_SSID = "TO_BE_SET";
-static const char* WIFI_PASSWORD = "TO_BE_SET";
+static const char* WIFI_SSID = "sqbusiness_home_2G";
+static const char* WIFI_PASSWORD = "sq$150411A";
 
 // LED behavior options:
 // - If your board has a simple onboard LED, set LED_MODE_GPIO to 1 and choose LED_PIN.
