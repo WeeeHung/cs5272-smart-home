@@ -278,6 +278,14 @@ def llama_infer_cmd(model_path):
             "64",
             "--temp",
             "0.1",
+            # Keep output pipe-friendly (helps subprocess capture).
+            "--simple-io",
+            "--no-display-prompt",
+            # Reduce extra formatting/logging that can confuse JSON parsing.
+            "-co",
+            "off",
+            "-lv",
+            "0",
             # Exit after one -p completion; default llama-cli is interactive REPL (hangs subprocess.run).
             "--single-turn",
             "-p",
