@@ -275,7 +275,9 @@ def llama_infer_cmd(model_path):
             "-ngl",
             "0",
             "-n",
-            "64",
+            # Tiny JSON output should fit in a small budget; smaller -n reduces
+            # the chance the model starts "helpfully" generating extra text/code.
+            "32",
             "--temp",
             "0.1",
             # Keep output pipe-friendly (helps subprocess capture).
@@ -528,12 +530,20 @@ def extract_intent(transcript, locations, actions, llama_model_path):
     print("Extracting intent with TinyLlama...")
     loc_str = ", ".join(str(x) for x in locations)
     act_str = ", ".join(str(x) for x in actions)
-    prompt = f"""You are a smart home parser. Read the user command and output ONLY valid JSON with 'location' and 'action' keys.
-Output exactly one JSON object on a single line; no examples, no markdown, no explanation.
-Available locations: {loc_str}.
-Available actions: {act_str}.
+    prompt = f"""You are a smart home parser.
+Given a user command, output JSON ONLY.
+
+Allowed locations: {loc_str}
+Allowed actions: {act_str}
+
+Output rules (follow exactly):
+- Output exactly ONE single-line JSON object with exactly these keys: "location" and "action".
+- Values must be selected from the allowed lists above.
+- If you cannot map the command to exactly one allowed location and one allowed action, output NOTHING (empty response).
+- Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
+
 Command: "{transcript}"
-JSON Output:"""
+JSON:"""
 
     cmd = llama_infer_cmd(llama_model_path) + [prompt]
     try:
@@ -563,8 +573,13 @@ JSON Output:"""
     output = combined.replace(prompt, "").strip()
     if not output and combined:
         output = combined
-    tail_log = output[-1500:] if len(output) > 1500 else output
-    print(f"LLM Output (tail): {tail_log!r}" if tail_log else "LLM Output: (empty)")
+    debug_llm = os.environ.get("PI_VOICE_DEBUG_LLM", "").strip().lower() not in ("", "0", "false")
+    if debug_llm:
+        tail_log = output[-1500:] if len(output) > 1500 else output
+        print(f"LLM Output (tail): {tail_log!r}" if tail_log else "LLM Output: (empty)")
+    else:
+        # Keep logs clean: only print a short status line, not the model's raw text.
+        print("LLM output received; parsing intent." if output else "LLM output empty; skipping parse.")
 
     if not output or "Failed to load" in combined:
         print(f"llama-cli model was: {llama_model_path!r}")
@@ -587,10 +602,13 @@ JSON Output:"""
 
     intent = _parse_first_intent_json(output)
     if intent is None:
-        print("Failed to parse LLM output into JSON.")
-        if output:
-            dbg = output[-1200:] if len(output) > 1200 else output
-            print(f"Unparsed buffer (tail): {dbg!r}")
+        if debug_llm:
+            print("Failed to parse LLM output into JSON.")
+            if output:
+                dbg = output[-1200:] if len(output) > 1200 else output
+                print(f"Unparsed buffer (tail): {dbg!r}")
+        else:
+            print("LLM returned non-JSON output; ignoring.")
         return None
     return intent
 
