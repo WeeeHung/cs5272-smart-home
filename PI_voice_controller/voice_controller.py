@@ -1,4 +1,5 @@
 import os
+import sys
 import wave
 import json
 import time
@@ -26,7 +27,17 @@ _FALLBACK_CAPTURE_RATES = (48000, 44100, 32000, 22050, 8000)
 WAV_OUTPUT_FILENAME = os.path.join(_SCRIPT_DIR, "command.wav")
 
 _WHISPER_CLI = os.path.join(_REPO_ROOT, "whisper.cpp", "build", "bin", "whisper-cli")
-_WHISPER_GGML = os.path.join(_REPO_ROOT, "whisper.cpp", "models", "ggml-base.en.bin")
+_WHISPER_MODEL_DIR = os.path.join(_REPO_ROOT, "whisper.cpp", "models")
+# Prefer English base; fall back to smaller models. Skip for-tests-*.bin stubs (< ~1 MiB).
+_WHISPER_MODEL_CANDIDATES = (
+    "ggml-base.en.bin",
+    "ggml-base.bin",
+    "ggml-small.en.bin",
+    "ggml-small.bin",
+    "ggml-tiny.en.bin",
+    "ggml-tiny.bin",
+)
+_WHISPER_MODEL_MIN_BYTES = 1_000_000
 _LLAMA_CLI = os.path.join(_REPO_ROOT, "llama.cpp", "build", "bin", "llama-cli")
 _LLAMA_GGUF = os.path.join(_REPO_ROOT, "models", "tinyllama-1.1b-chat.Q4_K_M.gguf")
 
@@ -34,16 +45,6 @@ _VOICE_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "config.json")
 _DEFAULT_LOCATIONS = ["living_room", "bedroom"]
 _DEFAULT_ACTIONS = ["turn_demo", "left_once", "right_once"]
 
-WHISPER_CMD = [
-    _WHISPER_CLI,
-    "-m",
-    _WHISPER_GGML,
-    "-f",
-    WAV_OUTPUT_FILENAME,
-    "-nt",
-    # Sidecar text is reliable when whisper prints nothing (e.g. zero segments on silence).
-    "-otxt",
-]
 # Ignore wake scores briefly after reopening the mic (ALSA pop / transient often false-triggers).
 WAKE_COOLDOWN_S = 0.85
 LLAMA_CMD = [
@@ -126,6 +127,8 @@ def _default_voice_config():
         "sync_locations_from_command_center": False,
         # None = auto-pick PortAudio input (USB name first); try 16 kHz then 48k/44.1k + resample.
         "input_device_index": None,
+        # Absolute path to a ggml model, or None: env PI_VOICE_WHISPER_MODEL, then whisper.cpp/models/*.
+        "whisper_model_path": None,
     }
 
 
@@ -166,6 +169,40 @@ def load_voice_config():
     if not isinstance(acts, list) or not acts:
         cfg["actions"] = list(_DEFAULT_ACTIONS)
     return cfg
+
+
+def resolve_whisper_model_path(cfg):
+    """
+    Return path to a usable ggml model, or None.
+    Order: PI_VOICE_WHISPER_MODEL, config whisper_model_path, then known names under whisper.cpp/models/.
+    """
+    env = os.environ.get("PI_VOICE_WHISPER_MODEL", "").strip()
+    if env:
+        env = os.path.expanduser(env)
+        if os.path.isfile(env) and os.path.getsize(env) >= _WHISPER_MODEL_MIN_BYTES:
+            return os.path.abspath(env)
+    p = cfg.get("whisper_model_path")
+    if isinstance(p, str) and p.strip():
+        p = os.path.expanduser(p.strip())
+        if os.path.isfile(p) and os.path.getsize(p) >= _WHISPER_MODEL_MIN_BYTES:
+            return os.path.abspath(p)
+    for name in _WHISPER_MODEL_CANDIDATES:
+        fp = os.path.join(_WHISPER_MODEL_DIR, name)
+        if os.path.isfile(fp) and os.path.getsize(fp) >= _WHISPER_MODEL_MIN_BYTES:
+            return os.path.abspath(fp)
+    return None
+
+
+def whisper_transcribe_cmd(model_path):
+    return [
+        _WHISPER_CLI,
+        "-m",
+        model_path,
+        "-f",
+        WAV_OUTPUT_FILENAME,
+        "-nt",
+        "-otxt",
+    ]
 
 
 def _input_device_candidates(p):
@@ -315,7 +352,7 @@ def record_audio(pyaudio_instance, input_device_index, capture_rate):
         wf.writeframes(raw.tobytes())
     print("Recording saved.")
 
-def transcribe_audio():
+def transcribe_audio(whisper_model_path):
     print("Transcribing with Whisper...")
     txt_sidecar = WAV_OUTPUT_FILENAME + ".txt"
     if os.path.isfile(txt_sidecar):
@@ -323,7 +360,9 @@ def transcribe_audio():
             os.remove(txt_sidecar)
         except OSError:
             pass
-    result = subprocess.run(WHISPER_CMD, capture_output=True, text=True)
+    result = subprocess.run(
+        whisper_transcribe_cmd(whisper_model_path), capture_output=True, text=True
+    )
     transcript = (result.stdout or "").strip()
     if not transcript and os.path.isfile(txt_sidecar):
         try:
@@ -381,6 +420,20 @@ def main():
     cfg = load_voice_config()
     print(f"Voice config locations: {cfg['locations']}")
 
+    whisper_model = resolve_whisper_model_path(cfg)
+    if not whisper_model:
+        print(
+            "No Whisper ggml model found. Expected a real model (not for-tests-*.bin) under\n"
+            f"  {_WHISPER_MODEL_DIR}\n"
+            "e.g. ggml-base.en.bin (run whisper.cpp/models/download-ggml-model.sh base.en) or\n"
+            "ggml-tiny.en.bin. Override with config.json \"whisper_model_path\" or env PI_VOICE_WHISPER_MODEL."
+        )
+        sys.exit(1)
+    if not os.path.isfile(_WHISPER_CLI):
+        print(f"whisper-cli not found at {_WHISPER_CLI} (build whisper.cpp first).")
+        sys.exit(1)
+    print(f"Whisper model: {whisper_model}")
+
     # Initialize OpenWakeWord
     print("Loading wake word model...")
     oww_model = create_openwakeword_model()
@@ -418,7 +471,7 @@ def main():
 
                 try:
                     record_audio(p, input_dev, capture_rate)
-                    transcript = transcribe_audio()
+                    transcript = transcribe_audio(whisper_model)
 
                     if transcript:
                         intent = extract_intent(transcript, cfg["locations"], cfg["actions"])
