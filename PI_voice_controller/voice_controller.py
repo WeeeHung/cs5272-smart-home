@@ -1,6 +1,7 @@
 import os
 import wave
 import json
+import time
 import subprocess
 import urllib.request
 import importlib.metadata
@@ -40,7 +41,11 @@ WHISPER_CMD = [
     "-f",
     WAV_OUTPUT_FILENAME,
     "-nt",
+    # Sidecar text is reliable when whisper prints nothing (e.g. zero segments on silence).
+    "-otxt",
 ]
+# Ignore wake scores briefly after reopening the mic (ALSA pop / transient often false-triggers).
+WAKE_COOLDOWN_S = 0.85
 LLAMA_CMD = [
     _LLAMA_CLI,
     "-m",
@@ -312,8 +317,27 @@ def record_audio(pyaudio_instance, input_device_index, capture_rate):
 
 def transcribe_audio():
     print("Transcribing with Whisper...")
+    txt_sidecar = WAV_OUTPUT_FILENAME + ".txt"
+    if os.path.isfile(txt_sidecar):
+        try:
+            os.remove(txt_sidecar)
+        except OSError:
+            pass
     result = subprocess.run(WHISPER_CMD, capture_output=True, text=True)
-    transcript = result.stdout.strip()
+    transcript = (result.stdout or "").strip()
+    if not transcript and os.path.isfile(txt_sidecar):
+        try:
+            with open(txt_sidecar, encoding="utf-8", errors="replace") as f:
+                transcript = f.read().strip()
+        except OSError:
+            pass
+    if not transcript:
+        err = (result.stderr or "").strip()
+        if err:
+            tail = err[-800:] if len(err) > 800 else err
+            print(f"Whisper stderr (last part): {tail}")
+        if result.returncode != 0:
+            print(f"Whisper exited with code {result.returncode}")
     print(f"Transcript: {transcript}")
     return transcript
 
@@ -370,12 +394,16 @@ def main():
 
         print(f"Waiting for wake word 'hey homie'...")
 
+        wake_ignore_until = 0.0
         while True:
             raw = np.frombuffer(mic_stream.read(read_n, exception_on_overflow=False), dtype=np.int16)
             if capture_rate != AUDIO_RATE:
                 audio_data = resample_int16_to_rate(raw, capture_rate, AUDIO_RATE, CHUNK_SIZE)
             else:
                 audio_data = raw
+
+            if time.monotonic() < wake_ignore_until:
+                continue
 
             prediction = oww_model.predict(audio_data)
 
@@ -399,6 +427,7 @@ def main():
                 finally:
                     print(f"\nWaiting for wake word 'hey homie'...")
                     mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
+                    wake_ignore_until = time.monotonic() + WAKE_COOLDOWN_S
 
     except KeyboardInterrupt:
         print("Stopping...")

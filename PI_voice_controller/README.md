@@ -106,18 +106,18 @@ The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord m
 - **Naming:** The model basename (without `.tflite`) must match the key used in predictions. The code uses `WAKE_WORD_NAME = "hey_homie"`, so the file should be named `hey_homie.tflite`. If you replace it with another OpenWakeWord export, rename the file or update `WAKE_WORD_NAME` to match.
 - **Detection threshold:** Wake detections fire when the score for `hey_homie` is above `0.5` in `voice_controller.py`; raise it if you get false triggers, or lower it slightly if it misses the phrase.
 
-Place **whisper.cpp**, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model under the **repository root** (`cs5272-smart-home/`) like this:
+Place **whisper.cpp**, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model under the **repository root** (`cs5272-smart-home/`), for example by copying them from `~/smarthome/` into the repo:
 
 ```
 cs5272-smart-home/
-  whisper.cpp/          # build → build/bin/whisper-cli; put ggml-base.en in whisper.cpp/models/
+  whisper.cpp/          # build → build/bin/whisper-cli; ggml model in whisper.cpp/models/
   llama.cpp/            # build → build/bin/llama-cli
   models/
     tinyllama-1.1b-chat.Q4_K_M.gguf
   PI_voice_controller/
 ```
 
-`voice_controller.py` resolves those paths from the repo root, so you can run it from any working directory:
+Paths are resolved from the repo root (script location), not from your shell `cwd`:
 
 ```bash
 python3 PI_voice_controller/voice_controller.py
@@ -188,7 +188,7 @@ This exercises the same path as normal use: **microphone → OpenWakeWord → re
 
 - Component tests above pass where they apply (mic, Whisper, LLM JSON, and Test 4 curl).
 - `hey_homie.tflite` is in `PI_voice_controller/models/`, and Python deps (`openwakeword`, `pyaudio`, `numpy`, plus TFLite backend) are installed.
-- `whisper-cli` and `llama-cli` are built under `whisper.cpp/build/bin/` and `llama.cpp/build/bin/` inside the repo; `voice_controller.py` finds them automatically from the repo root.
+- `whisper-cli` and `llama-cli` are built under `whisper.cpp/build/bin/` and `llama.cpp/build/bin/` inside the repo; `voice_controller.py` resolves them from the repo root.
 - ESP32 is on the LAN, firmware running, and the Command Center can reach it (UDP presence / configured host—same as Test 4).
 - **Location map:** For commands that mention `living_room` or `bedroom`, the server must already map that location to a node (use `/map-location` or a restored `state.json`). The LLM prompt in `voice_controller.py` only advertises those locations and actions: `turn_demo`, `left_once`, `right_once`.
 
