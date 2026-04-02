@@ -63,6 +63,8 @@ pip install -r PI_voice_controller/requirements-py313-linux.txt
 
 (`git pull` first so `requirements-py313-linux.txt` exists on the Pi.)
 
+**Preprocessor models:** Installing openWakeWord from Git does not always ship `melspectrogram.tflite` and `embedding_model.tflite` under `site-packages`. On first run, `voice_controller.py` downloads them from the [v0.5.1 release](https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1) into `PI_voice_controller/models/.openwakeword_cache/` (gitignored). The Pi needs outbound HTTPS once for that, unless you copy those two files in by hand.
+
 See [openWakeWord](https://github.com/dscripka/openWakeWord) for other platform notes.
 
 #### Custom wake word model (`models/hey_homie.tflite`)

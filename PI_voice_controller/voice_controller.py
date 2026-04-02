@@ -51,11 +51,47 @@ LLAMA_CMD = [
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
+# Bundled in PyPI wheels but often missing after `pip install git+...`; same files as openWakeWord v0.5.1 release.
+_OWW_RELEASE_ASSETS = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
+_OWW_PREPROCESSOR_CACHE = os.path.join(_SCRIPT_DIR, "models", ".openwakeword_cache")
+
+
+def ensure_openwakeword_preprocessor_models():
+    """Download melspectrogram + embedding TFLite models if absent (fixes missing site-packages/resources)."""
+    os.makedirs(_OWW_PREPROCESSOR_CACHE, exist_ok=True)
+    paths = {}
+    for name in ("melspectrogram.tflite", "embedding_model.tflite"):
+        path = os.path.join(_OWW_PREPROCESSOR_CACHE, name)
+        paths[name] = path
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            continue
+        url = f"{_OWW_RELEASE_ASSETS}/{name}"
+        print(f"Downloading openWakeWord preprocessor model {name} ...")
+        req = urllib.request.Request(url, headers={"User-Agent": "cs5272-smart-home-voice/1"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = resp.read()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not download {url} (needed for openWakeWord audio features). "
+                "Check network or place the file manually under "
+                f"{_OWW_PREPROCESSOR_CACHE}"
+            ) from exc
+        with open(path, "wb") as f:
+            f.write(data)
+    return paths["melspectrogram.tflite"], paths["embedding_model.tflite"]
+
 
 def create_openwakeword_model():
     """Load custom .tflite wake model; requires openWakeWord >= 0.6 (see PI_voice_controller/requirements.txt)."""
+    mel_path, emb_path = ensure_openwakeword_preprocessor_models()
     try:
-        return Model(wakeword_models=[WAKE_WORD_MODEL_PATH], inference_framework="tflite")
+        return Model(
+            wakeword_models=[WAKE_WORD_MODEL_PATH],
+            inference_framework="tflite",
+            melspec_model_path=mel_path,
+            embedding_model_path=emb_path,
+        )
     except TypeError as e:
         msg = str(e)
         if "wakeword_models" in msg and "unexpected keyword" in msg:

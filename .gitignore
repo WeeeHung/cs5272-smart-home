@@ -21,3 +21,5 @@ PI4_command_center/config.json
 /llama.cpp/
 /models/*.gguf
 PI_voice_controller/command.wav
+# Auto-fetched openWakeWord melspectrogram + embedding TFLite (git pip installs omit wheel assets)
+PI_voice_controller/models/.openwakeword_cache/
