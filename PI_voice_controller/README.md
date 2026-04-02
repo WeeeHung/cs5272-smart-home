@@ -94,6 +94,8 @@ If auto-pick fails, force the USB line’s index:
 
 On boot, prefer the USB mic as default (optional): `sudo raspi-config` → audio, or PulseAudio/PipeWire default source.
 
+If wake word works but **`OSError: -9985 Device unavailable`** appears when recording the command, that was usually the wake stream still holding ALSA; the controller **closes** that stream before opening the command recorder (fixed in current `voice_controller.py`).
+
 #### Custom wake word model (`models/hey_homie.tflite`)
 
 The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord model stored as:

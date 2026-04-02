@@ -382,18 +382,23 @@ def main():
             if prediction[WAKE_WORD_NAME] > 0.5:
                 print("\nWake word detected!")
 
+                # Release ALSA/PortAudio device before opening a second stream in record_audio;
+                # stop_stream() alone keeps the device busy → OSError -9985 Device unavailable.
                 mic_stream.stop_stream()
+                mic_stream.close()
+                mic_stream = None
 
-                record_audio(p, input_dev, capture_rate)
-                transcript = transcribe_audio()
+                try:
+                    record_audio(p, input_dev, capture_rate)
+                    transcript = transcribe_audio()
 
-                if transcript:
-                    intent = extract_intent(transcript, cfg["locations"], cfg["actions"])
-                    if intent and "location" in intent and "action" in intent:
-                        trigger_actuator(intent, cfg["command_center_url"])
-
-                print(f"\nWaiting for wake word 'hey homie'...")
-                mic_stream.start_stream()
+                    if transcript:
+                        intent = extract_intent(transcript, cfg["locations"], cfg["actions"])
+                        if intent and "location" in intent and "action" in intent:
+                            trigger_actuator(intent, cfg["command_center_url"])
+                finally:
+                    print(f"\nWaiting for wake word 'hey homie'...")
+                    mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
 
     except KeyboardInterrupt:
         print("Stopping...")
