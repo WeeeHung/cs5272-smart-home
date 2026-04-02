@@ -224,16 +224,31 @@ def resolve_llama_model_path(cfg):
 
 
 def llama_infer_cmd(model_path):
-    return [
+    """
+    Flags tuned for Pi / embedded Linux: CPU-only, modest ctx, optional no-mmap (SD/mmap quirks).
+    Set PI_VOICE_LLAMA_MMAP=1 to omit --no-mmap (e.g. older llama-cli without the flag).
+    """
+    cmd = [
         _LLAMA_CLI,
         "-m",
         model_path,
-        "-n",
-        "30",
-        "--temp",
-        "0.1",
-        "-p",
     ]
+    if os.environ.get("PI_VOICE_LLAMA_MMAP", "").strip() != "1":
+        cmd.append("--no-mmap")
+    cmd.extend(
+        [
+            "-c",
+            "1024",
+            "-ngl",
+            "0",
+            "-n",
+            "128",
+            "--temp",
+            "0.1",
+            "-p",
+        ]
+    )
+    return cmd
 
 
 def whisper_transcribe_cmd(model_path):
@@ -443,12 +458,22 @@ JSON Output:"""
     print(f"LLM Output: {output}")
 
     if not output or "Failed to load" in raw_out:
+        print(f"llama-cli model was: {llama_model_path!r}")
+        if raw_out:
+            tail = raw_out[-2000:] if len(raw_out) > 2000 else raw_out
+            print(f"llama-cli stdout (last part): {tail}")
         err = (result.stderr or "").strip()
         if err:
             tail = err[-1200:] if len(err) > 1200 else err
             print(f"llama-cli stderr (last part): {tail}")
         if result.returncode != 0:
             print(f"llama-cli exited with code {result.returncode}")
+        if "Failed to load" in raw_out:
+            print(
+                "Hint: confirm file size matches a full TinyLlama GGUF (~600+ MiB for Q4_K_M); "
+                "try `PI_VOICE_LLAMA_MMAP=1 python3 ...` if --no-mmap is unsupported; "
+                "rebuild llama.cpp if the binary is old (needs -ngl / --no-mmap)."
+            )
 
     try:
         start = output.find("{")
@@ -500,7 +525,11 @@ def main():
     if not os.path.isfile(_LLAMA_CLI):
         print(f"llama-cli not found at {_LLAMA_CLI} (build llama.cpp first).")
         sys.exit(1)
-    print(f"Llama model: {llama_model}")
+    try:
+        _sz = os.path.getsize(llama_model)
+        print(f"Llama model: {llama_model} ({_sz // (1024 * 1024)} MiB)")
+    except OSError:
+        print(f"Llama model: {llama_model}")
 
     # Initialize OpenWakeWord
     print("Loading wake word model...")
