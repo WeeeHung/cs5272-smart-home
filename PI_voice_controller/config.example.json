@@ -2,5 +2,6 @@
   "command_center_url": "http://127.0.0.1:8080/trigger-location",
   "locations": ["living_room", "bedroom"],
   "actions": ["turn_demo", "left_once", "right_once"],
-  "sync_locations_from_command_center": false
+  "sync_locations_from_command_center": false,
+  "input_device_index": null
 }

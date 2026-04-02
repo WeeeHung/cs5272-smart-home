@@ -116,6 +116,8 @@ def _default_voice_config():
         "locations": list(_DEFAULT_LOCATIONS),
         "actions": list(_DEFAULT_ACTIONS),
         "sync_locations_from_command_center": False,
+        # None = try default PortAudio device, then scan inputs (USB name first) for 16 kHz mono.
+        "input_device_index": None,
     }
 
 
@@ -158,9 +160,89 @@ def load_voice_config():
     return cfg
 
 
-def record_audio(pyaudio_instance):
+def _input_device_candidates(p):
+    """(index, name) for devices with at least one input channel; USB-like names first."""
+    found = []
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if int(info.get("maxInputChannels", 0)) < 1:
+            continue
+        name = str(info.get("name", ""))
+        found.append((i, name))
+    found.sort(key=lambda t: (0 if "usb" in t[1].lower() else 1, t[0]))
+    return found
+
+
+def open_mic_stream(p, device_index, frames_per_buffer):
+    kw = dict(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=AUDIO_RATE,
+        input=True,
+        frames_per_buffer=frames_per_buffer,
+    )
+    if device_index is not None:
+        kw["input_device_index"] = device_index
+    return p.open(**kw)
+
+
+def resolve_input_device_index(p, cfg):
+    """
+    Pick a capture device that accepts AUDIO_RATE. Default ALSA device often fails at 16 kHz
+    (Invalid sample rate -9997); USB mics usually work.
+    """
+    env = os.environ.get("PI_VOICE_INPUT_DEVICE", "").strip()
+    if env.isdigit():
+        idx = int(env)
+        try:
+            open_mic_stream(p, idx, CHUNK_SIZE).close()
+        except OSError as e:
+            raise RuntimeError(f"PI_VOICE_INPUT_DEVICE={idx} failed to open at {AUDIO_RATE} Hz: {e}") from e
+        print(f"Using input device {idx} (from PI_VOICE_INPUT_DEVICE)")
+        return idx
+
+    pref = cfg.get("input_device_index")
+    if pref is not None:
+        idx = int(pref)
+        try:
+            open_mic_stream(p, idx, CHUNK_SIZE).close()
+        except OSError as e:
+            raise RuntimeError(
+                f"config input_device_index={idx} failed at {AUDIO_RATE} Hz: {e}. "
+                "Try another index or run arecord -l / python -c ... to list devices."
+            ) from e
+        print(f"Using input device {idx} (from config.json)")
+        return idx
+
+    try:
+        open_mic_stream(p, None, CHUNK_SIZE).close()
+        print("Using default PortAudio input device")
+        return None
+    except OSError:
+        pass
+
+    last_err = None
+    for i, name in _input_device_candidates(p):
+        try:
+            open_mic_stream(p, i, CHUNK_SIZE).close()
+            print(f"Using input device {i}: {name!r}")
+            return i
+        except OSError as e:
+            last_err = e
+
+    raise RuntimeError(
+        f"No input device accepted {AUDIO_RATE} Hz mono (last error: {last_err}). "
+        "Plug in a USB mic, set input_device_index in PI_voice_controller/config.json, "
+        "or PI_VOICE_INPUT_DEVICE to a PortAudio index. "
+        "List inputs: python3 -c \"import pyaudio as py; p=py.PyAudio(); "
+        "[print(i, p.get_device_info_by_index(i)['name']) for i in range(p.get_device_count()) "
+        "if p.get_device_info_by_index(i)['maxInputChannels']>0]; p.terminate()\""
+    ) from last_err
+
+
+def record_audio(pyaudio_instance, input_device_index):
     print("Listening for command...")
-    stream = pyaudio_instance.open(format=pyaudio.paInt16, channels=1, rate=AUDIO_RATE, input=True, frames_per_buffer=1024)
+    stream = open_mic_stream(pyaudio_instance, input_device_index, 1024)
     
     frames = []
     for _ in range(0, int(AUDIO_RATE / 1024 * RECORD_SECONDS)):
@@ -227,43 +309,41 @@ def main():
     # Initialize OpenWakeWord
     print("Loading wake word model...")
     oww_model = create_openwakeword_model()
-    
+
     p = pyaudio.PyAudio()
-    mic_stream = p.open(format=pyaudio.paInt16, channels=1, rate=AUDIO_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
-    
-    print(f"Waiting for wake word 'hey homie'...")
-    
+    mic_stream = None
     try:
+        input_dev = resolve_input_device_index(p, cfg)
+        mic_stream = open_mic_stream(p, input_dev, CHUNK_SIZE)
+
+        print(f"Waiting for wake word 'hey homie'...")
+
         while True:
-            # Get audio from mic
             audio_data = np.frombuffer(mic_stream.read(CHUNK_SIZE, exception_on_overflow=False), dtype=np.int16)
-            
-            # Feed to openWakeWord
+
             prediction = oww_model.predict(audio_data)
-            
-            # Check if the confidence score is high enough (0.5 is usually a good baseline)
+
             if prediction[WAKE_WORD_NAME] > 0.5:
                 print("\nWake word detected!")
-                
-                # We need to pause the continuous mic stream so we can record the command
+
                 mic_stream.stop_stream()
-                
-                record_audio(p)
+
+                record_audio(p, input_dev)
                 transcript = transcribe_audio()
-                
+
                 if transcript:
                     intent = extract_intent(transcript, cfg["locations"], cfg["actions"])
                     if intent and "location" in intent and "action" in intent:
                         trigger_actuator(intent, cfg["command_center_url"])
-                        
+
                 print(f"\nWaiting for wake word 'hey homie'...")
-                # Restart the listening stream
                 mic_stream.start_stream()
-                
+
     except KeyboardInterrupt:
         print("Stopping...")
     finally:
-        mic_stream.close()
+        if mic_stream is not None:
+            mic_stream.close()
         p.terminate()
 
 if __name__ == "__main__":

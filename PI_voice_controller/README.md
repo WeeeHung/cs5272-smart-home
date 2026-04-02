@@ -67,6 +67,23 @@ pip install -r PI_voice_controller/requirements-py313-linux.txt
 
 See [openWakeWord](https://github.com/dscripka/openWakeWord) for other platform notes.
 
+#### Microphone / `Invalid sample rate` (PyAudio `-9997`)
+
+The pipeline needs **16 kHz mono** input. The Pi’s **default** capture device often cannot do 16 kHz (HDMI or onboard audio), which triggers ALSA noise and `OSError: [Errno -9997] Invalid sample rate`.
+
+The script **auto-scans** input devices and prefers names containing **USB**. If it still fails, set an explicit PortAudio index:
+
+- In `PI_voice_controller/config.json`: `"input_device_index": <integer>` (from the list command below).
+- Or environment variable: `PI_VOICE_INPUT_DEVICE=<integer>`.
+
+List capture devices:
+
+```bash
+python3 -c "import pyaudio as py; p=py.PyAudio(); \
+  [print(i, p.get_device_info_by_index(i)['name']) for i in range(p.get_device_count()) \
+   if p.get_device_info_by_index(i)['maxInputChannels']>0]; p.terminate()"
+```
+
 #### Custom wake word model (`models/hey_homie.tflite`)
 
 The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord model stored as:
