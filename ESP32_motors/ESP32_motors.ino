@@ -300,7 +300,12 @@ void pollSerialCommands() {
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  // ESP32-S3 USB-CDC: after reset the host re-enumerates the port. A fixed delay is more
+  // reliable than while (!Serial), which can misbehave on some Windows + core combinations.
+  delay(2000);
+  Serial.println();
+  Serial.println("BOOT: ESP32_motors starting");
+  Serial.flush();
 
   if (LED_MODE_GPIO == 1) {
     pinMode(LED_PIN, OUTPUT);
