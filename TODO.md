@@ -1,0 +1,2 @@
+- [ ] think of a way to make wifi connection not hardcoded
+- [ ] add face camera detection

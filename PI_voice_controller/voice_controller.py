@@ -549,23 +549,28 @@ JSON Output:"""
         return None
 
     raw_out = (result.stdout or "").strip()
-    output = raw_out.replace(prompt, "").strip()
-    if not output and raw_out:
-        output = raw_out
-    print(f"LLM Output: {output}")
+    raw_err = (result.stderr or "").strip()
+    # Many llama-cli builds print the REPL banner and -p completion on stderr only; stdout is empty.
+    combined = "\n".join(s for s in (raw_out, raw_err) if s)
+    output = combined.replace(prompt, "").strip()
+    if not output and combined:
+        output = combined
+    tail_log = output[-1500:] if len(output) > 1500 else output
+    print(f"LLM Output (tail): {tail_log!r}" if tail_log else "LLM Output: (empty)")
 
-    if not output or "Failed to load" in raw_out:
+    if not output or "Failed to load" in combined:
         print(f"llama-cli model was: {llama_model_path!r}")
         if raw_out:
             tail = raw_out[-2000:] if len(raw_out) > 2000 else raw_out
             print(f"llama-cli stdout (last part): {tail}")
-        err = (result.stderr or "").strip()
-        if err:
-            tail = err[-1200:] if len(err) > 1200 else err
+        elif raw_err:
+            print("llama-cli stdout: (empty); completion text may be on stderr only.")
+        if raw_err:
+            tail = raw_err[-1200:] if len(raw_err) > 1200 else raw_err
             print(f"llama-cli stderr (last part): {tail}")
         if result.returncode != 0:
             print(f"llama-cli exited with code {result.returncode}")
-        if "Failed to load" in raw_out:
+        if "Failed to load" in combined:
             print(
                 "Hint: confirm file size matches a full TinyLlama GGUF (~600+ MiB for Q4_K_M); "
                 "try `PI_VOICE_LLAMA_MMAP=1 python3 ...` if --no-mmap is unsupported; "
@@ -575,6 +580,9 @@ JSON Output:"""
     intent = _parse_first_intent_json(output)
     if intent is None:
         print("Failed to parse LLM output into JSON.")
+        if output:
+            dbg = output[-1200:] if len(output) > 1200 else output
+            print(f"Unparsed buffer (tail): {dbg!r}")
         return None
     return intent
 

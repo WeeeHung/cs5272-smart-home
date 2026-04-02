@@ -1,4 +1,6 @@
 #include <ESP32Servo.h>
+#include <FS.h>
+#include <LittleFS.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiUdp.h>
@@ -6,9 +8,9 @@
 // SG90 servo signal pin (change if needed)
 static const int SERVO_PIN = 18;
 
-// Wi-Fi credentials (hardcoded as requested)
-static const char* WIFI_SSID = "sqbusiness_home_2G";
-static const char* WIFI_PASSWORD = "sq$150411A";
+// Wi-Fi credentials: loaded from /config.json on LittleFS (put config.json in sketch data/ and upload filesystem).
+static String wifiSsid;
+static String wifiPassword;
 
 // LED behavior options:
 // - If your board has a simple onboard LED, set LED_MODE_GPIO to 1 and choose LED_PIN.
@@ -174,6 +176,60 @@ bool isKnownCommand(const String &commandUpper) {
          commandUpper == "RIGHT" || commandUpper == "CENTER" || commandUpper == "STATUS";
 }
 
+// Extract a quoted JSON string value for "key" without extra dependencies (same style as command body parser).
+static String extractJsonStringValue(const String &body, const char *key) {
+  String quotedKey = "\"";
+  quotedKey += key;
+  quotedKey += "\"";
+  int keyPos = body.indexOf(quotedKey);
+  if (keyPos < 0) {
+    return "";
+  }
+  int colonPos = body.indexOf(':', keyPos + static_cast<int>(quotedKey.length()));
+  if (colonPos < 0) {
+    return "";
+  }
+  int i = colonPos + 1;
+  while (i < body.length()) {
+    const char c = body.charAt(i);
+    if (c != ' ' && c != '\t' && c != '\r' && c != '\n') {
+      break;
+    }
+    ++i;
+  }
+  if (i >= body.length() || body.charAt(i) != '"') {
+    return "";
+  }
+  const int firstQuote = i;
+  const int secondQuote = body.indexOf('"', firstQuote + 1);
+  if (secondQuote < 0) {
+    return "";
+  }
+  return body.substring(firstQuote + 1, secondQuote);
+}
+
+static bool loadWifiConfigFromLittleFS() {
+  if (!LittleFS.begin(false)) {
+    Serial.println("ERR: LittleFS mount failed — upload filesystem with data/config.json");
+    return false;
+  }
+  File f = LittleFS.open("/config.json", "r");
+  if (!f || f.isDirectory()) {
+    Serial.println("ERR: /config.json not found on LittleFS");
+    return false;
+  }
+  const String cfg = f.readString();
+  f.close();
+
+  wifiSsid = extractJsonStringValue(cfg, "wifi_ssid");
+  wifiPassword = extractJsonStringValue(cfg, "wifi_password");
+  if (wifiSsid.length() == 0) {
+    Serial.println("ERR: config.json missing non-empty \"wifi_ssid\"");
+    return false;
+  }
+  return true;
+}
+
 // Minimal parser for {"command":"..."} body without extra dependencies.
 String extractCommandFromJsonBody(const String &body) {
   const String key = "\"command\"";
@@ -313,20 +369,26 @@ void setup() {
   }
 
   WiFi.mode(WIFI_STA);
-  Serial.print("WIFI: CONNECTING TO SSID=");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  const unsigned long wifiStartMs = millis();
-  int wifiAttempt = 0;
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStartMs) < 10000UL) {
-    wifiAttempt++;
-    Serial.print("WIFI_CONNECT_ATTEMPT=");
-    Serial.print(wifiAttempt);
-    Serial.print(", STATUS_CODE=");
-    Serial.println(WiFi.status());
-    delay(500);
+  bool wifiConfigured = loadWifiConfigFromLittleFS();
+  if (!wifiConfigured) {
+    Serial.println("WIFI: SKIPPED (no valid config.json)");
+    lastWifiStatus = WiFi.status();
+  } else {
+    Serial.print("WIFI: CONNECTING TO SSID=");
+    Serial.println(wifiSsid);
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    const unsigned long wifiStartMs = millis();
+    int wifiAttempt = 0;
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiStartMs) < 10000UL) {
+      wifiAttempt++;
+      Serial.print("WIFI_CONNECT_ATTEMPT=");
+      Serial.print(wifiAttempt);
+      Serial.print(", STATUS_CODE=");
+      Serial.println(WiFi.status());
+      delay(500);
+    }
+    lastWifiStatus = WiFi.status();
   }
-  lastWifiStatus = WiFi.status();
   if (lastWifiStatus == WL_CONNECTED) {
     Serial.print("WIFI_STATUS: CONNECTED, IP=");
     Serial.println(WiFi.localIP());
