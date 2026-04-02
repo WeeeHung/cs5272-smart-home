@@ -4,3 +4,4 @@
 openwakeword>=0.6.0
 pyaudio
 numpy
+scipy>=1.3

@@ -69,20 +69,30 @@ See [openWakeWord](https://github.com/dscripka/openWakeWord) for other platform 
 
 #### Microphone / `Invalid sample rate` (PyAudio `-9997`)
 
-The pipeline needs **16 kHz mono** input. The Pi’s **default** capture device often cannot do 16 kHz (HDMI or onboard audio), which triggers ALSA noise and `OSError: [Errno -9997] Invalid sample rate`.
+The pipeline needs **16 kHz mono** for openWakeWord and Whisper. The Pi’s **default** device often rejects **16 kHz** (`-9997`). Many **USB mics** only expose **48 kHz or 44.1 kHz** through ALSA; `voice_controller.py` now tries those rates and **resamples to 16 kHz** with SciPy.
 
-The script **auto-scans** input devices and prefers names containing **USB**. If it still fails, set an explicit PortAudio index:
+**Check that the OS sees your USB mic**
 
-- In `PI_voice_controller/config.json`: `"input_device_index": <integer>` (from the list command below).
-- Or environment variable: `PI_VOICE_INPUT_DEVICE=<integer>`.
+```bash
+lsusb                          # USB devices
+arecord -l                     # ALSA capture cards (card N, device M → often plughw:N,M)
+arecord -D plughw:1,0 -d 3 -f S16_LE -r 48000 /tmp/test.wav   # adjust card; play with aplay
+```
 
-List capture devices:
+**PortAudio indices** (what this script uses) may differ from ALSA card numbers:
 
 ```bash
 python3 -c "import pyaudio as py; p=py.PyAudio(); \
-  [print(i, p.get_device_info_by_index(i)['name']) for i in range(p.get_device_count()) \
-   if p.get_device_info_by_index(i)['maxInputChannels']>0]; p.terminate()"
+  [print(i, p.get_device_info_by_index(i)['name'], int(p.get_device_info_by_index(i)['defaultSampleRate'])) \
+   for i in range(p.get_device_count()) if p.get_device_info_by_index(i)['maxInputChannels']>0]; p.terminate()"
 ```
+
+If auto-pick fails, force the USB line’s index:
+
+- `PI_voice_controller/config.json`: `"input_device_index": <integer>`
+- Or: `PI_VOICE_INPUT_DEVICE=<integer> python3 PI_voice_controller/voice_controller.py`
+
+On boot, prefer the USB mic as default (optional): `sudo raspi-config` → audio, or PulseAudio/PipeWire default source.
 
 #### Custom wake word model (`models/hey_homie.tflite`)
 

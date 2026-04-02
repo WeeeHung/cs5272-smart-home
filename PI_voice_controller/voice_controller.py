@@ -6,6 +6,7 @@ import urllib.request
 import importlib.metadata
 import pyaudio
 import numpy as np
+from scipy import signal
 from openwakeword.model import Model
 
 # Repo layout: cs5272-smart-home/{whisper.cpp,llama.cpp,models/,PI_voice_controller/}
@@ -19,6 +20,8 @@ WAKE_WORD_NAME = "hey_homie"
 AUDIO_RATE = 16000
 CHUNK_SIZE = 1280
 RECORD_SECONDS = 4
+# If hardware rejects 16 kHz (common on Pi + USB), we capture at native rate and resample.
+_FALLBACK_CAPTURE_RATES = (48000, 44100, 32000, 22050, 8000)
 WAV_OUTPUT_FILENAME = os.path.join(_SCRIPT_DIR, "command.wav")
 
 _WHISPER_CLI = os.path.join(_REPO_ROOT, "whisper.cpp", "build", "bin", "whisper-cli")
@@ -116,7 +119,7 @@ def _default_voice_config():
         "locations": list(_DEFAULT_LOCATIONS),
         "actions": list(_DEFAULT_ACTIONS),
         "sync_locations_from_command_center": False,
-        # None = try default PortAudio device, then scan inputs (USB name first) for 16 kHz mono.
+        # None = auto-pick PortAudio input (USB name first); try 16 kHz then 48k/44.1k + resample.
         "input_device_index": None,
     }
 
@@ -173,11 +176,29 @@ def _input_device_candidates(p):
     return found
 
 
-def open_mic_stream(p, device_index, frames_per_buffer):
+def _sample_rates_to_try(p, device_index):
+    """Prefer 16 kHz, then device default, then common USB rates."""
+    rates = [AUDIO_RATE]
+    if device_index is not None:
+        dr = int(float(p.get_device_info_by_index(device_index).get("defaultSampleRate", 0)))
+        if dr > 0 and dr not in rates:
+            rates.append(dr)
+    for r in _FALLBACK_CAPTURE_RATES:
+        if r not in rates:
+            rates.append(r)
+    return rates
+
+
+def _probe_mic(p, device_index, sample_rate, frames_per_buffer):
+    stream = open_mic_stream(p, device_index, sample_rate, frames_per_buffer)
+    stream.close()
+
+
+def open_mic_stream(p, device_index, sample_rate, frames_per_buffer):
     kw = dict(
         format=pyaudio.paInt16,
         channels=1,
-        rate=AUDIO_RATE,
+        rate=int(sample_rate),
         input=True,
         frames_per_buffer=frames_per_buffer,
     )
@@ -186,77 +207,107 @@ def open_mic_stream(p, device_index, frames_per_buffer):
     return p.open(**kw)
 
 
-def resolve_input_device_index(p, cfg):
+def resample_int16_to_rate(pcm_i16: np.ndarray, src_rate: int, dst_rate: int, num_out: int) -> np.ndarray:
+    """Resample mono int16 PCM to exactly num_out samples at implied dst_rate/source duration."""
+    if src_rate == dst_rate:
+        if pcm_i16.size == num_out:
+            return pcm_i16.astype(np.int16, copy=False)
+        if pcm_i16.size > num_out:
+            return pcm_i16[:num_out].astype(np.int16, copy=False)
+        return np.pad(pcm_i16, (0, num_out - pcm_i16.size)).astype(np.int16)
+    x = pcm_i16.astype(np.float64)
+    y = signal.resample(x, num_out)
+    return np.clip(np.round(y), -32768, 32767).astype(np.int16)
+
+
+def resolve_input_device_and_rate(p, cfg):
     """
-    Pick a capture device that accepts AUDIO_RATE. Default ALSA device often fails at 16 kHz
-    (Invalid sample rate -9997); USB mics usually work.
+    Pick (device_index, capture_sample_rate). Many ALSA USB devices only allow 48k/44.1k;
+    we then resample to AUDIO_RATE for openWakeWord and Whisper.
     """
     env = os.environ.get("PI_VOICE_INPUT_DEVICE", "").strip()
     if env.isdigit():
         idx = int(env)
-        try:
-            open_mic_stream(p, idx, CHUNK_SIZE).close()
-        except OSError as e:
-            raise RuntimeError(f"PI_VOICE_INPUT_DEVICE={idx} failed to open at {AUDIO_RATE} Hz: {e}") from e
-        print(f"Using input device {idx} (from PI_VOICE_INPUT_DEVICE)")
-        return idx
+        last_err = None
+        for sr in _sample_rates_to_try(p, idx):
+            try:
+                _probe_mic(p, idx, sr, CHUNK_SIZE)
+                print(f"Using input device {idx} at {sr} Hz (PI_VOICE_INPUT_DEVICE); resample to {AUDIO_RATE} Hz: {sr != AUDIO_RATE}")
+                return idx, sr
+            except OSError as e:
+                last_err = e
+        raise RuntimeError(f"PI_VOICE_INPUT_DEVICE={idx}: no sample rate worked (last: {last_err})") from last_err
 
     pref = cfg.get("input_device_index")
     if pref is not None:
         idx = int(pref)
-        try:
-            open_mic_stream(p, idx, CHUNK_SIZE).close()
-        except OSError as e:
-            raise RuntimeError(
-                f"config input_device_index={idx} failed at {AUDIO_RATE} Hz: {e}. "
-                "Try another index or run arecord -l / python -c ... to list devices."
-            ) from e
-        print(f"Using input device {idx} (from config.json)")
-        return idx
+        last_err = None
+        for sr in _sample_rates_to_try(p, idx):
+            try:
+                _probe_mic(p, idx, sr, CHUNK_SIZE)
+                print(f"Using input device {idx} at {sr} Hz (config.json); resample to {AUDIO_RATE} Hz: {sr != AUDIO_RATE}")
+                return idx, sr
+            except OSError as e:
+                last_err = e
+        raise RuntimeError(
+            f"config input_device_index={idx}: no sample rate worked (last: {last_err}). "
+            "See README: arecord -l and PortAudio device list."
+        ) from last_err
 
-    try:
-        open_mic_stream(p, None, CHUNK_SIZE).close()
-        print("Using default PortAudio input device")
-        return None
-    except OSError:
-        pass
+    for sr in _sample_rates_to_try(p, None):
+        try:
+            _probe_mic(p, None, sr, CHUNK_SIZE)
+            print(f"Using default input device at {sr} Hz; resample to {AUDIO_RATE} Hz: {sr != AUDIO_RATE}")
+            return None, sr
+        except OSError:
+            continue
 
     last_err = None
     for i, name in _input_device_candidates(p):
-        try:
-            open_mic_stream(p, i, CHUNK_SIZE).close()
-            print(f"Using input device {i}: {name!r}")
-            return i
-        except OSError as e:
-            last_err = e
+        for sr in _sample_rates_to_try(p, i):
+            try:
+                _probe_mic(p, i, sr, CHUNK_SIZE)
+                print(f"Using input device {i}: {name!r} at {sr} Hz; resample to {AUDIO_RATE} Hz: {sr != AUDIO_RATE}")
+                return i, sr
+            except OSError as e:
+                last_err = e
 
     raise RuntimeError(
-        f"No input device accepted {AUDIO_RATE} Hz mono (last error: {last_err}). "
-        "Plug in a USB mic, set input_device_index in PI_voice_controller/config.json, "
-        "or PI_VOICE_INPUT_DEVICE to a PortAudio index. "
-        "List inputs: python3 -c \"import pyaudio as py; p=py.PyAudio(); "
+        f"No input device worked (last error: {last_err}). "
+        "Check USB mic: lsusb, arecord -l. Set input_device_index in config.json or PI_VOICE_INPUT_DEVICE. "
+        "List PortAudio devices: python3 -c \"import pyaudio as py; p=py.PyAudio(); "
         "[print(i, p.get_device_info_by_index(i)['name']) for i in range(p.get_device_count()) "
         "if p.get_device_info_by_index(i)['maxInputChannels']>0]; p.terminate()\""
     ) from last_err
 
 
-def record_audio(pyaudio_instance, input_device_index):
+def record_audio(pyaudio_instance, input_device_index, capture_rate):
     print("Listening for command...")
-    stream = open_mic_stream(pyaudio_instance, input_device_index, 1024)
-    
+    n_in = int(round(RECORD_SECONDS * capture_rate))
+    block = min(1024, max(1, n_in))
+    stream = open_mic_stream(pyaudio_instance, input_device_index, capture_rate, block)
+
     frames = []
-    for _ in range(0, int(AUDIO_RATE / 1024 * RECORD_SECONDS)):
-        data = stream.read(1024, exception_on_overflow=False)
+    total = 0
+    while total < n_in:
+        chunk = min(block, n_in - total)
+        data = stream.read(chunk, exception_on_overflow=False)
         frames.append(data)
+        total += chunk
         
     stream.stop_stream()
     stream.close()
 
-    with wave.open(WAV_OUTPUT_FILENAME, 'wb') as wf:
+    raw = np.frombuffer(b"".join(frames), dtype=np.int16)[:n_in]
+    if capture_rate != AUDIO_RATE:
+        n_out = int(round(RECORD_SECONDS * AUDIO_RATE))
+        raw = resample_int16_to_rate(raw, capture_rate, AUDIO_RATE, n_out)
+
+    with wave.open(WAV_OUTPUT_FILENAME, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(pyaudio_instance.get_sample_size(pyaudio.paInt16))
         wf.setframerate(AUDIO_RATE)
-        wf.writeframes(b''.join(frames))
+        wf.writeframes(raw.tobytes())
     print("Recording saved.")
 
 def transcribe_audio():
@@ -313,13 +364,18 @@ def main():
     p = pyaudio.PyAudio()
     mic_stream = None
     try:
-        input_dev = resolve_input_device_index(p, cfg)
-        mic_stream = open_mic_stream(p, input_dev, CHUNK_SIZE)
+        input_dev, capture_rate = resolve_input_device_and_rate(p, cfg)
+        read_n = max(1, int(round(CHUNK_SIZE * capture_rate / AUDIO_RATE)))
+        mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
 
         print(f"Waiting for wake word 'hey homie'...")
 
         while True:
-            audio_data = np.frombuffer(mic_stream.read(CHUNK_SIZE, exception_on_overflow=False), dtype=np.int16)
+            raw = np.frombuffer(mic_stream.read(read_n, exception_on_overflow=False), dtype=np.int16)
+            if capture_rate != AUDIO_RATE:
+                audio_data = resample_int16_to_rate(raw, capture_rate, AUDIO_RATE, CHUNK_SIZE)
+            else:
+                audio_data = raw
 
             prediction = oww_model.predict(audio_data)
 
@@ -328,7 +384,7 @@ def main():
 
                 mic_stream.stop_stream()
 
-                record_audio(p, input_dev)
+                record_audio(p, input_dev, capture_rate)
                 transcript = transcribe_audio()
 
                 if transcript:
