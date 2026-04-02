@@ -1,5 +1,6 @@
-# Voice controller deps. Use >=0.6 so Model(wakeword_models=..., inference_framework=...) matches
-# current API; older wheels (e.g. on Python 3.13) forward bad kwargs to AudioFeatures and crash.
+# Voice controller deps. openWakeWord >= 0.6 matches Model(wakeword_models=..., inference_framework=...).
+# On Python 3.13 + Linux, PyPI cannot satisfy openwakeword 0.6.0 (tflite-runtime has no cp313 wheels);
+# use requirements-py313-linux.txt instead.
 openwakeword>=0.6.0
 pyaudio
 numpy

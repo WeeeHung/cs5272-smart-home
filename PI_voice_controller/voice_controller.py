@@ -64,9 +64,12 @@ def create_openwakeword_model():
             except importlib.metadata.PackageNotFoundError:
                 ver = "unknown"
             raise RuntimeError(
-                f"openWakeWord {ver} is too old for this script (AudioFeatures got stray kwargs). "
-                "Upgrade: pip install -U 'openwakeword>=0.6.0'\n"
-                "On Python 3.13, if TFLite fails to import, also try: pip install ai-edge-litert"
+                f"openWakeWord {ver} is too old for this script (AudioFeatures got stray kwargs).\n"
+                "Usually: pip install -U 'openwakeword>=0.6.0'\n"
+                "Python 3.13 on Linux: PyPI needs tflite-runtime (missing); GitHub install needs "
+                "speexdsp-ns (often missing for cp313). Use --no-deps, then requirements file:\n"
+                "  pip install 'openwakeword @ git+https://github.com/dscripka/openWakeWord.git' --no-deps\n"
+                "  pip install -r PI_voice_controller/requirements-py313-linux.txt"
             ) from e
         raise
 

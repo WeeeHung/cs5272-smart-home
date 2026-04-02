@@ -46,21 +46,24 @@ The project is split into two main components:
 
 ### 3. AI Brain Setup (Raspberry Pi)
 
-Install the required Python libraries inside your virtual environment:
+Install the required Python libraries inside your virtual environment.
+
+**Most setups** (Python 3.12 or earlier, or Windows):
 
 ```bash
 pip install -r PI_voice_controller/requirements.txt
 ```
 
-That pins **openWakeWord ≥ 0.6.0**. Older releases (sometimes chosen on **Python 3.13**) use a different `Model()` API and crash with `AudioFeatures.__init__() got an unexpected keyword argument 'wakeword_models'`.
-
-For OpenWakeWord’s TFLite path (`inference_framework="tflite"`), recent upstream builds use **LiteRT** (`ai-edge-litert`). If import fails, install it (or use full TensorFlow). Example:
+**Raspberry Pi / Linux with Python 3.13:** PyPI’s `openwakeword==0.6.0` requires **`tflite-runtime`** (no cp313 Linux wheels), so you stay on **0.4.x** and hit `AudioFeatures... wakeword_models`. Installing **from GitHub** fixes TFLite via **`ai-edge-litert`**, but upstream also requires **`speexdsp-ns`** on Linux, which still has **no Python 3.13 wheel**. Our voice pipeline does **not** enable Speex noise suppression, so install openWakeWord **without** pulling that dependency, then install the rest:
 
 ```bash
-pip install ai-edge-litert
+pip install 'openwakeword @ git+https://github.com/dscripka/openWakeWord.git' --no-deps
+pip install -r PI_voice_controller/requirements-py313-linux.txt
 ```
 
-(or `pip install tensorflow`—see [openWakeWord](https://github.com/dscripka/openWakeWord) install notes for your platform).
+(`git pull` first so `requirements-py313-linux.txt` exists on the Pi.)
+
+See [openWakeWord](https://github.com/dscripka/openWakeWord) for other platform notes.
 
 #### Custom wake word model (`models/hey_homie.tflite`)
 
