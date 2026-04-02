@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import wave
 import json
@@ -51,8 +52,12 @@ _VOICE_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "config.json")
 _DEFAULT_LOCATIONS = ["living_room", "bedroom"]
 _DEFAULT_ACTIONS = ["turn_demo", "left_once", "right_once"]
 
-# Ignore wake scores briefly after reopening the mic (ALSA pop / transient often false-triggers).
-WAKE_COOLDOWN_S = 0.85
+_DEFAULT_WAKE_REFRACTORY_S = 2.5
+_DEFAULT_WAKE_THRESHOLD = 0.5
+_DEFAULT_WAKE_MIN_INTERVAL_S = 3.0
+_DEFAULT_WAKE_SILENCE_FLUSH_S = 0.0
+# llama-cli on Pi CPU can be slow; avoid hanging forever if REPL or runaway generation.
+_LLAMA_SUBPROCESS_TIMEOUT_S = 180
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
@@ -127,6 +132,14 @@ def _default_voice_config():
         "whisper_model_path": None,
         # Absolute path to TinyLlama (or compatible) .gguf, or None: env PI_VOICE_LLAMA_MODEL, then models/*.
         "llama_model_path": None,
+        # After each command, ignore wake scores until this many seconds have passed (OWW buffer flush).
+        "wake_refractory_s": _DEFAULT_WAKE_REFRACTORY_S,
+        # OpenWakeWord score threshold for hey_homie (0–1).
+        "wake_threshold": _DEFAULT_WAKE_THRESHOLD,
+        # Minimum seconds between accepted wake activations; 0 disables (backstop for double-fires).
+        "wake_min_interval_s": _DEFAULT_WAKE_MIN_INTERVAL_S,
+        # After reopening the mic, drain hardware while feeding silence through predict (seconds); 0 disables.
+        "wake_silence_flush_s": _DEFAULT_WAKE_SILENCE_FLUSH_S,
     }
 
 
@@ -166,6 +179,25 @@ def load_voice_config():
         cfg["locations"] = list(_DEFAULT_LOCATIONS)
     if not isinstance(acts, list) or not acts:
         cfg["actions"] = list(_DEFAULT_ACTIONS)
+
+    def _coerce_float(v, default):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    r = _coerce_float(cfg.get("wake_refractory_s"), _DEFAULT_WAKE_REFRACTORY_S)
+    cfg["wake_refractory_s"] = r if r >= 0 else _DEFAULT_WAKE_REFRACTORY_S
+
+    thr = _coerce_float(cfg.get("wake_threshold"), _DEFAULT_WAKE_THRESHOLD)
+    cfg["wake_threshold"] = min(1.0, max(0.05, thr))
+
+    mi = _coerce_float(cfg.get("wake_min_interval_s"), _DEFAULT_WAKE_MIN_INTERVAL_S)
+    cfg["wake_min_interval_s"] = max(0.0, mi)
+
+    sf = _coerce_float(cfg.get("wake_silence_flush_s"), _DEFAULT_WAKE_SILENCE_FLUSH_S)
+    cfg["wake_silence_flush_s"] = sf if sf >= 0 else _DEFAULT_WAKE_SILENCE_FLUSH_S
+
     return cfg
 
 
@@ -227,6 +259,7 @@ def llama_infer_cmd(model_path):
     """
     Flags tuned for Pi / embedded Linux: CPU-only, modest ctx, optional no-mmap (SD/mmap quirks).
     Set PI_VOICE_LLAMA_MMAP=1 to omit --no-mmap (e.g. older llama-cli without the flag).
+    Uses --single-turn so llama-cli exits after one -p reply (default is interactive REPL).
     """
     cmd = [
         _LLAMA_CLI,
@@ -245,10 +278,30 @@ def llama_infer_cmd(model_path):
             "128",
             "--temp",
             "0.1",
+            # Exit after one -p completion; default llama-cli is interactive REPL (hangs subprocess.run).
+            "--single-turn",
             "-p",
         ]
     )
     return cmd
+
+
+def _extract_json_object_string(text: str):
+    """Prefer first ```json ... ``` fence; else first { ... } span for json.loads."""
+    if not text or not text.strip():
+        return None
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if fence:
+        inner = fence.group(1).strip()
+        start = inner.find("{")
+        end = inner.rfind("}") + 1
+        if start >= 0 and end > start:
+            return inner[start:end]
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start >= 0 and end > start:
+        return text[start:end]
+    return None
 
 
 def whisper_transcribe_cmd(model_path):
@@ -305,6 +358,17 @@ def open_mic_stream(p, device_index, sample_rate, frames_per_buffer):
     if device_index is not None:
         kw["input_device_index"] = device_index
     return p.open(**kw)
+
+
+def flush_openwakeword_with_silence(oww_model, mic_stream, read_n, duration_s):
+    """Drain the capture device while feeding silence through predict (clears OWW streaming buffer)."""
+    if duration_s <= 0:
+        return
+    silence = np.zeros(CHUNK_SIZE, dtype=np.int16)
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        mic_stream.read(read_n, exception_on_overflow=False)
+        oww_model.predict(silence)
 
 
 def resample_int16_to_rate(pcm_i16: np.ndarray, src_rate: int, dst_rate: int, num_out: int) -> np.ndarray:
@@ -449,7 +513,25 @@ Command: "{transcript}"
 JSON Output:"""
 
     cmd = llama_infer_cmd(llama_model_path) + [prompt]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_LLAMA_SUBPROCESS_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        print(
+            f"llama-cli timed out after {_LLAMA_SUBPROCESS_TIMEOUT_S}s "
+            "(model too slow or still in interactive mode)."
+        )
+        proc = getattr(exc, "process", None)
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        return None
 
     raw_out = (result.stdout or "").strip()
     output = raw_out.replace(prompt, "").strip()
@@ -475,12 +557,13 @@ JSON Output:"""
                 "rebuild llama.cpp if the binary is old (needs -ngl / --no-mmap)."
             )
 
+    json_str = _extract_json_object_string(output)
+    if not json_str:
+        print("Failed to parse LLM output into JSON.")
+        return None
     try:
-        start = output.find("{")
-        end = output.rfind("}") + 1
-        json_str = output[start:end]
         return json.loads(json_str)
-    except Exception:
+    except json.JSONDecodeError:
         print("Failed to parse LLM output into JSON.")
         return None
 
@@ -544,7 +627,13 @@ def main():
 
         print(f"Waiting for wake word 'hey homie'...")
 
-        wake_ignore_until = 0.0
+        wake_refractory_until = 0.0
+        last_accepted_wake_at = None
+        wake_thr = float(cfg["wake_threshold"])
+        wake_ref_s = float(cfg["wake_refractory_s"])
+        wake_min_iv = float(cfg["wake_min_interval_s"])
+        wake_flush_s = float(cfg["wake_silence_flush_s"])
+
         while True:
             raw = np.frombuffer(mic_stream.read(read_n, exception_on_overflow=False), dtype=np.int16)
             if capture_rate != AUDIO_RATE:
@@ -552,12 +641,20 @@ def main():
             else:
                 audio_data = raw
 
-            if time.monotonic() < wake_ignore_until:
-                continue
-
             prediction = oww_model.predict(audio_data)
+            now = time.monotonic()
+            try:
+                score = float(prediction[WAKE_WORD_NAME])
+            except (KeyError, TypeError, ValueError):
+                score = 0.0
 
-            if prediction[WAKE_WORD_NAME] > 0.5:
+            refractory_ok = now >= wake_refractory_until
+            interval_ok = True
+            if wake_min_iv > 0 and last_accepted_wake_at is not None:
+                interval_ok = (now - last_accepted_wake_at) >= wake_min_iv
+
+            if refractory_ok and interval_ok and score > wake_thr:
+                last_accepted_wake_at = now
                 print("\nWake word detected!")
 
                 # Release ALSA/PortAudio device before opening a second stream in record_audio;
@@ -579,7 +676,8 @@ def main():
                 finally:
                     print(f"\nWaiting for wake word 'hey homie'...")
                     mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
-                    wake_ignore_until = time.monotonic() + WAKE_COOLDOWN_S
+                    flush_openwakeword_with_silence(oww_model, mic_stream, read_n, wake_flush_s)
+                    wake_refractory_until = time.monotonic() + wake_ref_s
 
     except KeyboardInterrupt:
         print("Stopping...")

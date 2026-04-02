@@ -5,5 +5,9 @@
   "sync_locations_from_command_center": false,
   "input_device_index": null,
   "whisper_model_path": null,
-  "llama_model_path": null
+  "llama_model_path": null,
+  "wake_refractory_s": 2.5,
+  "wake_threshold": 0.5,
+  "wake_min_interval_s": 3.0,
+  "wake_silence_flush_s": 0
 }

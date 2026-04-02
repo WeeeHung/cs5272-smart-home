@@ -104,7 +104,7 @@ The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord m
 
 - **Placement:** Keep the `.tflite` file in that `models/` folder. `voice_controller.py` resolves the path relative to the script, so you do not need to copy the model into the current working directory.
 - **Naming:** The model basename (without `.tflite`) must match the key used in predictions. The code uses `WAKE_WORD_NAME = "hey_homie"`, so the file should be named `hey_homie.tflite`. If you replace it with another OpenWakeWord export, rename the file or update `WAKE_WORD_NAME` to match.
-- **Detection threshold:** Wake detections fire when the score for `hey_homie` is above `0.5` in `voice_controller.py`; raise it if you get false triggers, or lower it slightly if it misses the phrase.
+- **Detection threshold:** Wake detections fire when the score for `hey_homie` is above `wake_threshold` in `config.json` (default `0.5`); raise it if you get false triggers, or lower it slightly if it misses the phrase. After each command, OpenWakeWord’s internal buffer is advanced every chunk while scores are ignored for `wake_refractory_s` seconds (default `2.5`); use `wake_min_interval_s` (default `3`) as a backstop between activations, or set `wake_silence_flush_s` to feed a short silence flush after reopening the mic if a device still double-fires.
 
 Place **whisper.cpp**, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model under the **repository root** (`cs5272-smart-home/`), for example by copying them from `~/smarthome/` into the repo:
 
@@ -212,5 +212,6 @@ This exercises the same path as normal use: **microphone → OpenWakeWord → re
 
 - **`unknown_location`:** Map the location with `/map-location` (or align your spoken phrase with an already-mapped location).
 - **`node_unreachable`:** Fix ESP32 Wi‑Fi, `discover_subnet` / static `host` in `config.json`, or UDP presence (see `PI4_command_center/README.md`).
-- **Wake word never fires:** Adjust the `0.5` threshold in `voice_controller.py`, reduce background noise, or confirm the model name matches `WAKE_WORD_NAME`.
-- **Bad or empty JSON from the LLM:** Keep commands short and aligned with the allowed locations/actions; check `llama-cli` and the GGUF path.
+- **Wake word never fires:** Adjust `wake_threshold` in `config.json`, reduce background noise, or confirm the model name matches `WAKE_WORD_NAME`.
+- **Wake word fires twice right after one command:** Increase `wake_refractory_s` or `wake_min_interval_s`, or try `wake_silence_flush_s` (see `config.example.json`).
+- **Bad or empty JSON from the LLM:** Keep commands short and aligned with the allowed locations/actions; check `llama-cli` and the GGUF path (a `Failed to load the model` line from `llama-cli` means the wake loop can still repeat until the model loads—fix the GGUF path or binary, not the wake settings).
