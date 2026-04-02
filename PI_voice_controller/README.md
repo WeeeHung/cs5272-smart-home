@@ -39,9 +39,9 @@ The project is split into two main components:
   ```bash
    cd PI4_command_center
   ```
-3. Start the routing server:
+3. Copy and edit config if needed (`cp config.example.json config.json`), then start the routing server (from `PI4_command_center`):
   ```bash
-    python3 server.py
+  python3 server.py --config config.json --host 0.0.0.0 --port 8080
   ```
 
 ### 3. AI Brain Setup (Raspberry Pi)
@@ -70,9 +70,18 @@ The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord m
 - **Naming:** The model basename (without `.tflite`) must match the key used in predictions. The code uses `WAKE_WORD_NAME = "hey_homie"`, so the file should be named `hey_homie.tflite`. If you replace it with another OpenWakeWord export, rename the file or update `WAKE_WORD_NAME` to match.
 - **Detection threshold:** Wake detections fire when the score for `hey_homie` is above `0.5` in `voice_controller.py`; raise it if you get false triggers, or lower it slightly if it misses the phrase.
 
-Download **whisper.cpp** binaries, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model into your main smarthome directory (paths in `voice_controller.py` expect that layout).
+Place **whisper.cpp**, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model under the **repository root** (`cs5272-smart-home/`) like this:
 
-Start the Voice Controller loop from the directory where your `whisper.cpp` / `llama.cpp` paths resolve (typically the repository root):
+```
+cs5272-smart-home/
+  whisper.cpp/          # build → build/bin/whisper-cli; put ggml-base.en in whisper.cpp/models/
+  llama.cpp/            # build → build/bin/llama-cli
+  models/
+    tinyllama-1.1b-chat.Q4_K_M.gguf
+  PI_voice_controller/
+```
+
+`voice_controller.py` resolves those paths from the repo root, so you can run it from any working directory:
 
 ```bash
 python3 PI_voice_controller/voice_controller.py
@@ -80,7 +89,7 @@ python3 PI_voice_controller/voice_controller.py
 
 ## 🧪 Testing the Pipeline
 
-Before running the full system, test the individual components from your ~/smarthome/ directory to isolate any hardware or software issues.
+Before running the full system, test the individual components from the **repository root** (where `whisper.cpp/` and `llama.cpp/` live) to isolate any hardware or software issues.
 
 ### Test 1: Microphone Check
 
@@ -95,7 +104,7 @@ Speak into the mic for 4 seconds, then check the playback to ensure clear audio.
 
 ### Test 2: Whisper.cpp Transcription
 
-Pass the audio file you just recorded into the compiled Whisper CLI (run from `~/smarthome` or wherever `whisper.cpp` lives). Newer whisper.cpp builds put the binary in `build/bin/` and use `**whisper-cli**` instead of deprecated `main`:
+Pass the audio file you just recorded into the compiled Whisper CLI (run from the repo root). Newer whisper.cpp builds put the binary in `build/bin/` and use **whisper-cli** instead of deprecated `main`:
 
 ```bash
 ./whisper.cpp/build/bin/whisper-cli -m ./whisper.cpp/models/ggml-base.en.bin -f test_mic.wav -nt
@@ -115,12 +124,57 @@ Expected Output: {"location": "living_room", "action": "turn_demo"}
 
 ### Test 4: Local Server & ESP32 Actuation
 
-Ensure your ESP32 is powered on, wired to the servo, and running the actuator firmware. With server.py running in one terminal, open a second terminal and simulate a command:
+Ensure your ESP32 is powered on, wired to the servo, and running the actuator firmware. With `server.py` running in one terminal, open a second terminal and simulate the same JSON the voice pipeline sends.
+
+**Location mapping:** `/trigger-location` resolves a **location string** to a node using the Command Center’s persisted map (see `PI4_command_center/README.md`). If you have not mapped `living_room` yet, do that once (adjust `node`, `host`, and `port` to match your setup):
 
 ```bash
-curl -X POST "[http://127.0.0.1:8080/trigger-location](http://127.0.0.1:8080/trigger-location)" \
+curl -X POST "http://127.0.0.1:8080/map-location" \
+  -H "Content-Type: application/json" \
+  -d '{"node":"motor_a","location":"living_room","host":"192.168.1.50","port":80}'
+```
+
+Then trigger by location:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/trigger-location" \
   -H "Content-Type: application/json" \
   -d '{"location":"living_room","action":"turn_demo"}'
 ```
 
-If the physical servo moves, your backend routing and hardware integration are completely functional.
+If the physical servo moves, your backend routing and hardware integration are working.
+
+### Test 5: Full end-to-end test (wake word → ESP32)
+
+This exercises the same path as normal use: **microphone → OpenWakeWord → recording → Whisper → TinyLlama → HTTP POST to Command Center → ESP32**.
+
+**Prerequisites**
+
+- Component tests above pass where they apply (mic, Whisper, LLM JSON, and Test 4 curl).
+- `hey_homie.tflite` is in `PI_voice_controller/models/`, and Python deps (`openwakeword`, `pyaudio`, `numpy`, plus TFLite backend) are installed.
+- `whisper-cli` and `llama-cli` are built under `whisper.cpp/build/bin/` and `llama.cpp/build/bin/` inside the repo; `voice_controller.py` finds them automatically from the repo root.
+- ESP32 is on the LAN, firmware running, and the Command Center can reach it (UDP presence / configured host—same as Test 4).
+- **Location map:** For commands that mention `living_room` or `bedroom`, the server must already map that location to a node (use `/map-location` or a restored `state.json`). The LLM prompt in `voice_controller.py` only advertises those locations and actions: `turn_demo`, `left_once`, `right_once`.
+
+**Procedure**
+
+1. On the Pi, from `PI4_command_center`, start the Command Center and leave it running:
+   ```bash
+   cd PI4_command_center
+   python3 server.py --config config.json --host 0.0.0.0 --port 8080
+   ```
+2. In a **second** terminal, start the voice loop (any cwd; paths are fixed to the repo root):
+   ```bash
+   python3 PI_voice_controller/voice_controller.py
+   ```
+3. Wait for `Waiting for wake word 'hey homie'...`.
+4. Say the wake phrase clearly, then speak a short command that the model can map to JSON, for example: *“Turn on the living room demo”* or *“Living room turn demo”* (goal: transcript + LLM output like `{"location": "living_room", "action": "turn_demo"}`).
+5. Watch the terminal: wake detection → `Recording saved.` → Whisper transcript → `LLM Output:` with JSON → `Triggering command center:` → `Success! Status: 200` (or an error if routing fails).
+6. **Success criteria:** HTTP 200 from the Command Center **and** the expected physical motion on the mapped ESP32.
+
+**If something fails**
+
+- **`unknown_location`:** Map the location with `/map-location` (or align your spoken phrase with an already-mapped location).
+- **`node_unreachable`:** Fix ESP32 Wi‑Fi, `discover_subnet` / static `host` in `config.json`, or UDP presence (see `PI4_command_center/README.md`).
+- **Wake word never fires:** Adjust the `0.5` threshold in `voice_controller.py`, reduce background noise, or confirm the model name matches `WAKE_WORD_NAME`.
+- **Bad or empty JSON from the LLM:** Keep commands short and aligned with the allowed locations/actions; check `llama-cli` and the GGUF path.

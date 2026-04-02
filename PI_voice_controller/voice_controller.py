@@ -7,28 +7,36 @@ import pyaudio
 import numpy as np
 from openwakeword.model import Model
 
-# Configuration (model lives next to this script under models/)
-WAKE_WORD_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "hey_homie.tflite")
+# Repo layout: cs5272-smart-home/{whisper.cpp,llama.cpp,models/,PI_voice_controller/}
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+
+# Configuration (wake model lives next to this script under models/)
+WAKE_WORD_MODEL_PATH = os.path.join(_SCRIPT_DIR, "models", "hey_homie.tflite")
 WAKE_WORD_NAME = "hey_homie"
 
 AUDIO_RATE = 16000
 CHUNK_SIZE = 1280
 RECORD_SECONDS = 4
-WAV_OUTPUT_FILENAME = "command.wav"
+WAV_OUTPUT_FILENAME = os.path.join(_SCRIPT_DIR, "command.wav")
 
-# Paths to Jeremy's compiled binaries and models
+_WHISPER_CLI = os.path.join(_REPO_ROOT, "whisper.cpp", "build", "bin", "whisper-cli")
+_WHISPER_GGML = os.path.join(_REPO_ROOT, "whisper.cpp", "models", "ggml-base.en.bin")
+_LLAMA_CLI = os.path.join(_REPO_ROOT, "llama.cpp", "build", "bin", "llama-cli")
+_LLAMA_GGUF = os.path.join(_REPO_ROOT, "models", "tinyllama-1.1b-chat.Q4_K_M.gguf")
+
 WHISPER_CMD = [
-    "./whisper.cpp/build/bin/whisper-cli",
+    _WHISPER_CLI,
     "-m",
-    "./whisper.cpp/models/ggml-base.en.bin",
+    _WHISPER_GGML,
     "-f",
     WAV_OUTPUT_FILENAME,
     "-nt",
 ]
 LLAMA_CMD = [
-    "./llama.cpp/build/bin/llama-cli",
+    _LLAMA_CLI,
     "-m",
-    "./models/tinyllama-1.1b-chat.Q4_K_M.gguf",
+    _LLAMA_GGUF,
     "-n",
     "30",
     "--temp",

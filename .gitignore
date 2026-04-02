@@ -15,3 +15,9 @@ __pycache__/
 # state and config files
 PI4_command_center/state.json
 PI4_command_center/config.json
+
+# Local whisper.cpp / llama.cpp clones and weights (keep under repo root on device)
+/whisper.cpp/
+/llama.cpp/
+/models/*.gguf
+PI_voice_controller/command.wav
