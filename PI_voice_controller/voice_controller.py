@@ -49,7 +49,7 @@ _LLAMA_MODEL_CANDIDATES = (
 )
 
 _VOICE_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "config.json")
-_DEFAULT_LOCATIONS = ["living_room", "bedroom"]
+_DEFAULT_LOCATIONS = ["living_room", "kitchen"]
 _DEFAULT_ACTIONS = ["turn_demo", "left_once", "right_once"]
 
 _DEFAULT_WAKE_REFRACTORY_S = 2.5
@@ -541,22 +541,19 @@ IMPORTANT: Switch ON means action = "right_once"
 
 Output rules (follow exactly):
 - Output exactly ONE single-line JSON object with exactly these keys: "location" and "action".
-- Values must be selected from the allowed lists above.
-- If you cannot map the command to exactly one allowed location and one allowed action, output NOTHING (empty response).
 - Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
 - Location in the output should exist in the allowed locations list.
 - Action in the output should exist in the allowed actions list.
 
 Example Input 1:
-Switch off the light in the living room
+Command: Switch off the light in the living room
 Example Output 1:
 {{"location": "living_room", "action": "left_once"}}
 
 Example Input 2:
-Switch on the light in the kitchen
+Command: Switch on the light in the kitchen
 Example Output 2:
 {{"location": "kitchen", "action": "right_once"}}
-
 
 Command: "{transcript}"
 JSON:"""
