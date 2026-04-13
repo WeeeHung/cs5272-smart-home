@@ -547,9 +547,9 @@ Output rules (follow exactly):
 Example Output:
 {{"location": "living_room", "action": "turn_demo"}}
 Example Output:
-{{"location": "bedroom", "action": "left_once"}}
+{{"location": "kitchen", "action": "left_once"}}
 Example Output:
-{{"location": "bedroom", "action": "right_once"}}
+{{"location": "kitchen", "action": "right_once"}}
 
 Command: "{transcript}"
 JSON:"""
