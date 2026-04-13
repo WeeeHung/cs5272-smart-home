@@ -537,9 +537,11 @@ def extract_intent(transcript, locations, actions, llama_model_path):
         f'Reply with ONE line only: a JSON object with keys "location" and "action". '
         f"First character must be {{ . Last character must be }} . No other text. "
         f"locations: [{loc_str}]. actions: [{act_str}]. "
-        f'switch off / lights off -> "left_once"; switch on / lights on -> "right_once". '
-        f'Examples: {{"location":"living_room","action":"left_once"}} '
-        f'{{"location":"kitchen","action":"right_once"}}. '
+        f'IMPORTANT: switch off / lights off -> "left_once"; switch on / lights on -> "right_once". '
+        f'Example input 1: Switch off the light in the living room'
+        f'Example output 1: {{"location":"living_room","action":"left_once"}} '
+        f'Example input 2: Switch on the light in the kitchen'
+        f'Example output 2: {{"location":"kitchen","action":"right_once"}} '
         f"Command: {json.dumps(transcript)}\n"
     )
 
