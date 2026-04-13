@@ -543,11 +543,11 @@ Output rules (follow exactly):
 - Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
 
 Example Output:
-{"location": "living_room", "action": "turn_demo"}
+{{"location": "living_room", "action": "turn_demo"}}
 Example Output:
-{"location": "bedroom", "action": "left_once"}
+{{"location": "bedroom", "action": "left_once"}}
 Example Output:
-{"location": "bedroom", "action": "right_once"}
+{{"location": "bedroom", "action": "right_once"}}
 
 Command: "{transcript}"
 JSON:"""
