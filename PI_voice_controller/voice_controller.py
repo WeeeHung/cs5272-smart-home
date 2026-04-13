@@ -58,6 +58,8 @@ _DEFAULT_WAKE_MIN_INTERVAL_S = 3.0
 _DEFAULT_WAKE_SILENCE_FLUSH_S = 0.0
 # llama-cli on Pi CPU can be slow; avoid hanging forever if REPL or runaway generation.
 _LLAMA_SUBPROCESS_TIMEOUT_S = 180
+# Max new tokens for intent JSON; one line is ~15–25 tokens but small models add chatter—override with PI_VOICE_LLAMA_MAX_TOKENS.
+_LLAMA_MAX_NEW_TOKENS_DEFAULT = 64
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
@@ -259,6 +261,7 @@ def llama_infer_cmd(model_path):
     """
     Flags tuned for Pi / embedded Linux: CPU-only, modest ctx, optional no-mmap (SD/mmap quirks).
     Set PI_VOICE_LLAMA_MMAP=1 to omit --no-mmap (e.g. older llama-cli without the flag).
+    Set PI_VOICE_LLAMA_MAX_TOKENS to cap new tokens (default see _LLAMA_MAX_NEW_TOKENS_DEFAULT).
     Uses --single-turn so llama-cli exits after one -p reply (default is interactive REPL).
     """
     cmd = [
@@ -275,9 +278,8 @@ def llama_infer_cmd(model_path):
             "-ngl",
             "0",
             "-n",
-            # Tiny JSON output should fit in a small budget; smaller -n reduces
-            # the chance the model starts "helpfully" generating extra text/code.
-            "32",
+            os.environ.get("PI_VOICE_LLAMA_MAX_TOKENS", "").strip()
+            or str(_LLAMA_MAX_NEW_TOKENS_DEFAULT),
             "--temp",
             "0.1",
             # Keep output pipe-friendly (helps subprocess capture).
@@ -530,33 +532,16 @@ def extract_intent(transcript, locations, actions, llama_model_path):
     print("Extracting intent with TinyLlama...")
     loc_str = ", ".join(str(x) for x in locations)
     act_str = ", ".join(str(x) for x in actions)
-    prompt = f"""You are a smart home parser.
-Given a user command, output JSON ONLY.
-
-Allowed locations: {loc_str}
-Allowed actions: {act_str}
-
-IMPORTANT: Switch OFF means action = "left_once"
-IMPORTANT: Switch ON means action = "right_once"
-
-Output rules (follow exactly):
-- Output exactly ONE single-line JSON object with exactly these keys: "location" and "action".
-- Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
-- Location in the output should exist in the allowed locations list.
-- Action in the output should exist in the allowed actions list.
-
-Example Input 1:
-Command: Switch off the light in the living room
-Example Output 1:
-{{"location": "living_room", "action": "left_once"}}
-
-Example Input 2:
-Command: Switch on the light in the kitchen
-Example Output 2:
-{{"location": "kitchen", "action": "right_once"}}
-
-Command: "{transcript}"
-JSON:"""
+    # Short prompt: chat models copy multi-line "Command:/JSON:" templates and burn the -n token budget.
+    prompt = (
+        f'Reply with ONE line only: a JSON object with keys "location" and "action". '
+        f"First character must be {{ . Last character must be }} . No other text. "
+        f"locations: [{loc_str}]. actions: [{act_str}]. "
+        f'switch off / lights off -> "left_once"; switch on / lights on -> "right_once". '
+        f'Examples: {{"location":"living_room","action":"left_once"}} '
+        f'{{"location":"kitchen","action":"right_once"}}. '
+        f"Command: {json.dumps(transcript)}\n"
+    )
 
     cmd = llama_infer_cmd(llama_model_path) + [prompt]
     try:
