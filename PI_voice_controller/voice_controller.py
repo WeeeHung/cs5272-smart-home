@@ -542,6 +542,13 @@ Output rules (follow exactly):
 - If you cannot map the command to exactly one allowed location and one allowed action, output NOTHING (empty response).
 - Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
 
+Example Output:
+{"location": "living_room", "action": "turn_demo"}
+Example Output:
+{"location": "bedroom", "action": "left_once"}
+Example Output:
+{"location": "bedroom", "action": "right_once"}
+
 Command: "{transcript}"
 JSON:"""
 
@@ -573,7 +580,7 @@ JSON:"""
     output = combined.replace(prompt, "").strip()
     if not output and combined:
         output = combined
-    debug_llm = os.environ.get("PI_VOICE_DEBUG_LLM", "").strip().lower() not in ("", "0", "false")
+    debug_llm = True
     if debug_llm:
         tail_log = output[-1500:] if len(output) > 1500 else output
         print(f"LLM Output (tail): {tail_log!r}" if tail_log else "LLM Output: (empty)")
