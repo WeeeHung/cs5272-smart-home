@@ -541,6 +541,8 @@ Output rules (follow exactly):
 - Values must be selected from the allowed lists above.
 - If you cannot map the command to exactly one allowed location and one allowed action, output NOTHING (empty response).
 - Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
+- Location in the output should exist in the allowed locations list.
+- Action in the output should exist in the allowed actions list.
 
 Example Output:
 {{"location": "living_room", "action": "turn_demo"}}
