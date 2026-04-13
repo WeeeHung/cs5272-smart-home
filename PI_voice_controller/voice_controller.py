@@ -536,6 +536,9 @@ Given a user command, output JSON ONLY.
 Allowed locations: {loc_str}
 Allowed actions: {act_str}
 
+IMPORTANT: Switch OFF means action = "left_once"
+IMPORTANT: Switch ON means action = "right_once"
+
 Output rules (follow exactly):
 - Output exactly ONE single-line JSON object with exactly these keys: "location" and "action".
 - Values must be selected from the allowed lists above.
@@ -544,12 +547,16 @@ Output rules (follow exactly):
 - Location in the output should exist in the allowed locations list.
 - Action in the output should exist in the allowed actions list.
 
-Example Output:
-{{"location": "living_room", "action": "turn_demo"}}
-Example Output:
-{{"location": "kitchen", "action": "left_once"}}
-Example Output:
+Example Input 1:
+Switch off the light in the living room
+Example Output 1:
+{{"location": "living_room", "action": "left_once"}}
+
+Example Input 2:
+Switch on the light in the kitchen
+Example Output 2:
 {{"location": "kitchen", "action": "right_once"}}
+
 
 Command: "{transcript}"
 JSON:"""
