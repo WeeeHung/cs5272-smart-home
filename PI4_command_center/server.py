@@ -172,6 +172,23 @@ def try_health_probe(host: str, port: int) -> bool:
     return code == 200 and looks_like_esp32_health(body)
 
 
+def health_check_loop(interval_s: float = 300.0) -> None:
+    """Periodically ping nodes to verify health and prune dead ones."""
+    while True:
+        time.sleep(interval_s)
+        LOGGER.info("Starting periodic health check of nodes in presence cache.")
+        with PRESENCE_LOCK:
+            to_remove = []
+            for node_id, data in PRESENCE_CACHE.items():
+                if not try_health_probe(str(data["ip"]), int(data["port"])):
+                    LOGGER.warning("Node %s at %s failed health probe. Removing from active cache.", node_id, data["ip"])
+                    to_remove.append(node_id)
+            for n in to_remove:
+                del PRESENCE_CACHE[n]
+        if to_remove:
+            save_state(CommandHandler.config)
+
+
 def discover_node_host(node_id: str, node_cfg: Dict[str, Any]) -> str:
     """Resolve node host via presence cache, configured host, then subnet sweep."""
     # 1) Presence cache from UDP broadcasts.
@@ -266,10 +283,64 @@ class CommandHandler(BaseHTTPRequestHandler):
                 {"ok": True, "nodes": snapshot, "location_map": location_snapshot},
             )
             return
+
+        # Serve static files for the frontend dashboard
+        if self.path == "/" or self.path == "/index.html" or self.path.startswith("/public/"):
+            self._serve_static_file()
+            return
+            
         self._json_response(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
+
+    def _serve_static_file(self) -> None:
+        path = self.path
+        if path == "/" or path == "/index.html":
+            path = "/public/index.html"
+            
+        if not path.startswith("/public/"):
+            path = "/public" + path
+
+        import mimetypes
+        
+        # Determine the safe path locally
+        safe_path = Path(path.lstrip("/")).resolve()
+        public_dir = Path("public").resolve()
+        
+        try:
+            if not str(safe_path).startswith(str(public_dir)):
+                self.send_response(HTTPStatus.FORBIDDEN)
+                self.end_headers()
+                return
+        except Exception:
+            self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.end_headers()
+            return
+            
+        if not safe_path.is_file():
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+            return
+
+        ctype, _ = mimetypes.guess_type(str(safe_path))
+        if not ctype:
+            ctype = "application/octet-stream"
+
+        try:
+            with safe_path.open("rb") as f:
+                content = f.read()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception:
+            self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
         """Accept trigger requests and forward mapped command to target ESP32."""
+        if self.path == "/api/upload-audio":
+            self._handle_upload_audio()
+            return
         if self.path == "/map-location":
             self._handle_map_location()
             return
@@ -346,6 +417,35 @@ class CommandHandler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
             return {}
+
+    def _handle_upload_audio(self) -> None:
+        """Proxy raw audio upload to local voice controller."""
+        content_len = int(self.headers.get("Content-Length", "0"))
+        if content_len == 0:
+            self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "empty_body"})
+            return
+        
+        body = self.rfile.read(content_len)
+        req = urllib.request.Request(
+            url="http://127.0.0.1:8082/upload-audio",
+            data=body,
+            method="POST",
+            headers={"Content-Type": self.headers.get("Content-Type", "application/octet-stream")}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180.0) as resp:
+                resp_body = resp.read()
+                self.send_response(resp.getcode())
+                self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+                self.send_header("Content-Length", str(len(resp_body)))
+                self.end_headers()
+                self.wfile.write(resp_body)
+        except urllib.error.HTTPError as exc:
+            self.send_response(exc.code)
+            self.end_headers()
+            self.wfile.write(exc.read())
+        except Exception as exc:
+            self._json_response(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
 
     def _handle_map_location(self) -> None:
         """Set location->node mapping (optionally set node host/ip too)."""
@@ -473,6 +573,7 @@ def main() -> None:
     CommandHandler.config = cfg
     save_state(cfg, STATE_FILE)
     threading.Thread(target=presence_listener, daemon=True).start()
+    threading.Thread(target=health_check_loop, args=(300.0,), daemon=True).start()
 
     server = ThreadingHTTPServer((args.host, args.port), CommandHandler)
     LOGGER.info("Command center listening on http://%s:%s", args.host, args.port)

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Home Actuators</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="background-blob"></div>
+    <div class="glass-container">
+        <header>
+            <h1>Actuator Dashboard</h1>
+            <button id="refresh-btn">⟳ Refresh</button>
+        </header>
+
+        <section id="voice-control" style="margin-bottom: 20px; text-align: center;">
+            <button id="record-btn" class="primary-btn" style="width: 100%; font-size: 1.2rem; padding: 20px; border-radius: 12px; transition: all 0.2s ease;">🎤 Hold to Speak Command</button>
+            <div id="record-status" style="margin-top: 10px; font-size: 0.9rem; color: var(--text-muted); display: none;">Recording...</div>
+        </section>
+
+        <section id="nodes-container">
+            <!-- Nodes will be loaded here dynamically -->
+            <div class="glass-card skeleton">Loading...</div>
+        </section>
+
+        <section id="map-form-container">
+            <h2>Map New Location</h2>
+            <form id="map-form">
+                <input type="text" id="node-id" placeholder="Node ID (e.g. motor_a)" required>
+                <input type="text" id="location-name" placeholder="Room Name (e.g. living_room)" required>
+                <button type="submit" class="primary-btn">Map Location</button>
+            </form>
+        </section>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

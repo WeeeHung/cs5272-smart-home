@@ -11,6 +11,8 @@ import pyaudio
 import numpy as np
 from scipy import signal
 from openwakeword.model import Model
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 
 # Repo layout: cs5272-smart-home/{whisper.cpp,llama.cpp,models/,PI_voice_controller/}
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -125,7 +127,7 @@ def _default_voice_config():
         "command_center_url": COMMAND_CENTER_URL,
         "locations": list(_DEFAULT_LOCATIONS),
         "actions": list(_DEFAULT_ACTIONS),
-        "sync_locations_from_command_center": False,
+        "sync_locations_from_command_center": True,
         # None = auto-pick PortAudio input (USB name first); try 16 kHz then 48k/44.1k + resample.
         "input_device_index": None,
         # Absolute path to a ggml model, or None: env PI_VOICE_WHISPER_MODEL, then whisper.cpp/models/*.
@@ -255,7 +257,7 @@ def resolve_llama_model_path(cfg):
     return None
 
 
-def llama_infer_cmd(model_path):
+def llama_infer_cmd(model_path, schema_str=None):
     """
     Flags tuned for Pi / embedded Linux: CPU-only, modest ctx, optional no-mmap (SD/mmap quirks).
     Set PI_VOICE_LLAMA_MMAP=1 to omit --no-mmap (e.g. older llama-cli without the flag).
@@ -293,6 +295,8 @@ def llama_infer_cmd(model_path):
             "-p",
         ]
     )
+    if schema_str:
+        cmd.extend(["--json-schema", schema_str])
     return cmd
 
 
@@ -526,8 +530,14 @@ def transcribe_audio(whisper_model_path):
     print(f"Transcript: {transcript}")
     return transcript
 
-def extract_intent(transcript, locations, actions, llama_model_path):
+def extract_intent(transcript, locations, actions, llama_model_path, retry_count=1):
     print("Extracting intent with TinyLlama...")
+    
+    # Build strict JSON schema
+    loc_enum = json.dumps(locations)
+    act_enum = json.dumps(actions)
+    schema_str = f'{{"type":"object","properties":{{"location":{{"type":"string","enum":{loc_enum}}},"action":{{"type":"string","enum":{act_enum}}}}},"required":["location","action"]}}'
+
     loc_str = ", ".join(str(x) for x in locations)
     act_str = ", ".join(str(x) for x in actions)
     prompt = f"""You are a smart home parser.
@@ -545,7 +555,7 @@ Output rules (follow exactly):
 Command: "{transcript}"
 JSON:"""
 
-    cmd = llama_infer_cmd(llama_model_path) + [prompt]
+    cmd = llama_infer_cmd(llama_model_path, schema_str) + [prompt]
     try:
         result = subprocess.run(
             cmd,
@@ -602,6 +612,9 @@ JSON:"""
 
     intent = _parse_first_intent_json(output)
     if intent is None:
+        if retry_count > 0:
+            print("Failed to strictly parse valid JSON intent. Retrying once...")
+            return extract_intent(transcript, locations, actions, llama_model_path, retry_count=retry_count-1)
         if debug_llm:
             print("Failed to parse LLM output into JSON.")
             if output:
@@ -622,6 +635,49 @@ def trigger_actuator(intent, command_center_url):
             print(f"Success! Status: {response.getcode()}")
     except Exception as e:
         print(f"Failed to reach Command Center: {e}")
+
+class VoiceAPIHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass # Suppress noisy logging
+    def do_POST(self):
+        if self.path == "/upload-audio":
+            try:
+                content_length = int(self.headers['Content-Length'])
+                body = self.rfile.read(content_length)
+                with open("upload.webm", "wb") as f:
+                    f.write(body)
+                
+                print("\n[Web UI] Received audio command.")
+                # convert to wav
+                subprocess.run(["ffmpeg", "-y", "-i", "upload.webm", "-ar", "16000", "-ac", "1", WAV_OUTPUT_FILENAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                transcript = transcribe_audio(self.server.whisper_model)
+                if transcript:
+                    intent = extract_intent(transcript, self.server.cfg["locations"], self.server.cfg["actions"], self.server.llama_model)
+                    if intent and "location" in intent and "action" in intent:
+                        trigger_actuator(intent, self.server.cfg["command_center_url"])
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+            except Exception as e:
+                print(f"[Web UI] Error processing audio: {e}")
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def run_voice_api(cfg, whisper_model, llama_model):
+    server_address = ('', 8082)
+    httpd = ThreadingHTTPServer(server_address, VoiceAPIHandler)
+    httpd.cfg = cfg
+    httpd.whisper_model = whisper_model
+    httpd.llama_model = llama_model
+    print("Voice API listening on port 8082 for manual uploads...")
+    httpd.serve_forever()
 
 def main():
     cfg = load_voice_config()
@@ -659,14 +715,19 @@ def main():
     except OSError:
         print(f"Llama model: {llama_model}")
 
-    # Initialize OpenWakeWord
-    print("Loading wake word model...")
-    oww_model = create_openwakeword_model()
+    # Start API thread for Web UI mic
+    api_thread = threading.Thread(target=run_voice_api, args=(cfg, whisper_model, llama_model), daemon=True)
+    api_thread.start()
 
     p = pyaudio.PyAudio()
     mic_stream = None
     try:
         input_dev, capture_rate = resolve_input_device_and_rate(p, cfg)
+        
+        # Initialize OpenWakeWord since hardware exists
+        print("Loading wake word model...")
+        oww_model = create_openwakeword_model()
+
         read_n = max(1, int(round(CHUNK_SIZE * capture_rate / AUDIO_RATE)))
         mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
 
@@ -726,6 +787,16 @@ def main():
 
     except KeyboardInterrupt:
         print("Stopping...")
+    except RuntimeError as e:
+        if "No input device" in str(e):
+            print(f"\nWarning: {e}")
+            print("Hardware microphone missing. Running in API-only headless mode...")
+            try:
+                while True: time.sleep(1)
+            except KeyboardInterrupt:
+                print("Stopping...")
+        else:
+            raise e
     finally:
         if mic_stream is not None:
             mic_stream.close()
