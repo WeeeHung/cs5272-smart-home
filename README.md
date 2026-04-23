@@ -161,6 +161,8 @@ All routes run on the PI4 server created by `PI4_command_center/server.py` (defa
    - defines:
      - `command_center_url` (must point to `http://<pi4>:8080/trigger-location`)
      - the allowed `locations` and `actions` for llama.cpp JSON parsing
+     - `llm_backend`: `llama_cli` (default) or `llama_server` (persistent HTTP backend)
+     - `llama_server_url`: endpoint used when `llm_backend` is `llama_server` (default `http://127.0.0.1:8081/v1/chat/completions`)
      - wake-word thresholds
 
 3. `ESP32_motors/data/config.json`
@@ -180,7 +182,10 @@ All routes run on the PI4 server created by `PI4_command_center/server.py` (defa
 4. Create at least one location mapping:
    - `POST /map-location` with `{"node":"motor_a","location":"living_room",...}`
 5. Start the voice controller:
-   - ensure `whisper.cpp/` and `llama.cpp/` and the models exist under the repo root (as expected by `voice_controller.py`)
+   - ensure `whisper.cpp/` and models exist under the repo root (as expected by `voice_controller.py`)
+   - optional faster path: run a persistent TinyLlama service first:
+     - `./llama.cpp/build/bin/llama-server -m ./models/tinyllama-1.1b-chat.Q4_K_M.gguf -ngl 0 -c 1024 --host 127.0.0.1 --port 8081`
+     - set `PI_voice_controller/config.json` -> `"llm_backend": "llama_server"`
    - `cd <repo_root>`
    - `cp PI_voice_controller/config.example.json PI_voice_controller/config.json`
-   - `python3 PI_voice_controller/voice_controller.py`
+   - `PI_VOICE_LLAMA_MAX_TOKENS=24 python3 PI_voice_controller/voice_controller.py`

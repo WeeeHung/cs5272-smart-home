@@ -60,6 +60,9 @@ _DEFAULT_WAKE_SILENCE_FLUSH_S = 0.0
 _LLAMA_SUBPROCESS_TIMEOUT_S = 180
 # Max new tokens for intent JSON; one line is ~15–25 tokens but small models add chatter—override with PI_VOICE_LLAMA_MAX_TOKENS.
 _LLAMA_MAX_NEW_TOKENS_DEFAULT = 64
+_LLAMA_SERVER_TIMEOUT_S = 30
+_LLM_BACKEND_CLI = "llama_cli"
+_LLM_BACKEND_SERVER = "llama_server"
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
@@ -134,6 +137,10 @@ def _default_voice_config():
         "whisper_model_path": None,
         # Absolute path to TinyLlama (or compatible) .gguf, or None: env PI_VOICE_LLAMA_MODEL, then models/*.
         "llama_model_path": None,
+        # LLM backend: "llama_cli" (spawn per request) or "llama_server" (persistent HTTP service).
+        "llm_backend": _LLM_BACKEND_CLI,
+        # llama-server OpenAI-compatible endpoint (used when llm_backend is "llama_server").
+        "llama_server_url": "http://127.0.0.1:8081/v1/chat/completions",
         # After each command, ignore wake scores until this many seconds have passed (OWW buffer flush).
         "wake_refractory_s": _DEFAULT_WAKE_REFRACTORY_S,
         # OpenWakeWord score threshold for hey_homie (0–1).
@@ -199,6 +206,18 @@ def load_voice_config():
 
     sf = _coerce_float(cfg.get("wake_silence_flush_s"), _DEFAULT_WAKE_SILENCE_FLUSH_S)
     cfg["wake_silence_flush_s"] = sf if sf >= 0 else _DEFAULT_WAKE_SILENCE_FLUSH_S
+
+    backend = str(cfg.get("llm_backend", _LLM_BACKEND_CLI)).strip().lower()
+    if backend not in (_LLM_BACKEND_CLI, _LLM_BACKEND_SERVER):
+        print(
+            f"Unknown llm_backend {backend!r}; falling back to {_LLM_BACKEND_CLI!r}. "
+            f"Supported: {_LLM_BACKEND_CLI!r}, {_LLM_BACKEND_SERVER!r}."
+        )
+        backend = _LLM_BACKEND_CLI
+    cfg["llm_backend"] = backend
+    cfg["llama_server_url"] = str(
+        cfg.get("llama_server_url", "http://127.0.0.1:8081/v1/chat/completions")
+    ).strip()
 
     return cfg
 
@@ -612,6 +631,80 @@ def extract_intent(transcript, locations, actions, llama_model_path):
         return None
     return intent
 
+
+def extract_intent_via_server(transcript, locations, actions, server_url):
+    print("Extracting intent with TinyLlama server...")
+    loc_str = ", ".join(str(x) for x in locations)
+    act_str = ", ".join(str(x) for x in actions)
+    prompt = (
+        f'Reply with ONE line only: a JSON object with keys "location" and "action". '
+        f"First character must be {{ . Last character must be }} . No other text. "
+        f"locations: [{loc_str}]. actions: [{act_str}]. "
+        f'IMPORTANT: switch off / lights off -> "left_once"; switch on / lights on -> "right_once". '
+        f'Example input 1: Switch off the light in the living room'
+        f'Example output 1: {{"location":"living_room","action":"left_once"}} '
+        f'Example input 2: Switch on the light in the kitchen'
+        f'Example output 2: {{"location":"kitchen","action":"right_once"}} '
+        f"Command: {json.dumps(transcript)}\n"
+    )
+    max_tokens = (
+        os.environ.get("PI_VOICE_LLAMA_MAX_TOKENS", "").strip()
+        or str(_LLAMA_MAX_NEW_TOKENS_DEFAULT)
+    )
+    try:
+        max_tokens_i = max(1, int(max_tokens))
+    except ValueError:
+        max_tokens_i = _LLAMA_MAX_NEW_TOKENS_DEFAULT
+
+    payload = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": max_tokens_i,
+    }
+    req = urllib.request.Request(
+        server_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_LLAMA_SERVER_TIMEOUT_S) as response:
+            resp_data = response.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        print(f"Failed to query llama-server at {server_url}: {exc}")
+        return None
+
+    try:
+        decoded = json.loads(resp_data)
+    except json.JSONDecodeError:
+        tail = resp_data[-1200:] if len(resp_data) > 1200 else resp_data
+        print(f"llama-server non-JSON response tail: {tail!r}")
+        return None
+
+    content = ""
+    choices = decoded.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first, dict) else {}
+        if isinstance(message, dict):
+            content = str(message.get("content") or "").strip()
+        if not content:
+            content = str(first.get("text") or "").strip() if isinstance(first, dict) else ""
+    if not content:
+        print("llama-server response did not contain completion text.")
+        return None
+
+    tail_log = content[-1500:] if len(content) > 1500 else content
+    print(f"LLM Output (tail): {tail_log!r}")
+    intent = _parse_first_intent_json(content)
+    if intent is None:
+        dbg = content[-1200:] if len(content) > 1200 else content
+        print("Failed to parse llama-server output into JSON.")
+        print(f"Unparsed buffer (tail): {dbg!r}")
+        return None
+    return intent
+
+
 def trigger_actuator(intent, command_center_url):
     print(f"Triggering command center: {intent}")
     data = json.dumps(intent).encode('utf-8')
@@ -626,6 +719,7 @@ def trigger_actuator(intent, command_center_url):
 def main():
     cfg = load_voice_config()
     print(f"Voice config locations: {cfg['locations']}")
+    print(f"LLM backend: {cfg['llm_backend']}")
 
     whisper_model = resolve_whisper_model_path(cfg)
     if not whisper_model:
@@ -641,23 +735,30 @@ def main():
         sys.exit(1)
     print(f"Whisper model: {whisper_model}")
 
-    llama_model = resolve_llama_model_path(cfg)
-    if not llama_model:
-        print(
-            "No Llama .gguf model found under\n"
-            f"  {_LLAMA_MODEL_DIR}\n"
-            "Expected TinyLlama ~Q4_K_M (≥50 MiB), e.g. tinyllama-1.1b-chat.Q4_K_M.gguf or\n"
-            "tinyllama-1.1b-chat-v1.0-q4_k_m.gguf. Set \"llama_model_path\" in config.json or PI_VOICE_LLAMA_MODEL."
-        )
-        sys.exit(1)
-    if not os.path.isfile(_LLAMA_CLI):
-        print(f"llama-cli not found at {_LLAMA_CLI} (build llama.cpp first).")
-        sys.exit(1)
-    try:
-        _sz = os.path.getsize(llama_model)
-        print(f"Llama model: {llama_model} ({_sz // (1024 * 1024)} MiB)")
-    except OSError:
-        print(f"Llama model: {llama_model}")
+    llama_model = None
+    if cfg["llm_backend"] == _LLM_BACKEND_CLI:
+        llama_model = resolve_llama_model_path(cfg)
+        if not llama_model:
+            print(
+                "No Llama .gguf model found under\n"
+                f"  {_LLAMA_MODEL_DIR}\n"
+                "Expected TinyLlama ~Q4_K_M (≥50 MiB), e.g. tinyllama-1.1b-chat.Q4_K_M.gguf or\n"
+                "tinyllama-1.1b-chat-v1.0-q4_k_m.gguf. Set \"llama_model_path\" in config.json or PI_VOICE_LLAMA_MODEL."
+            )
+            sys.exit(1)
+        if not os.path.isfile(_LLAMA_CLI):
+            print(f"llama-cli not found at {_LLAMA_CLI} (build llama.cpp first).")
+            sys.exit(1)
+        try:
+            _sz = os.path.getsize(llama_model)
+            print(f"Llama model: {llama_model} ({_sz // (1024 * 1024)} MiB)")
+        except OSError:
+            print(f"Llama model: {llama_model}")
+    else:
+        if not cfg["llama_server_url"]:
+            print("llm_backend='llama_server' requires a non-empty llama_server_url in config.json")
+            sys.exit(1)
+        print(f"llama-server URL: {cfg['llama_server_url']}")
 
     # Initialize OpenWakeWord
     print("Loading wake word model...")
@@ -713,9 +814,17 @@ def main():
                     transcript = transcribe_audio(whisper_model)
 
                     if transcript:
-                        intent = extract_intent(
-                            transcript, cfg["locations"], cfg["actions"], llama_model
-                        )
+                        if cfg["llm_backend"] == _LLM_BACKEND_SERVER:
+                            intent = extract_intent_via_server(
+                                transcript,
+                                cfg["locations"],
+                                cfg["actions"],
+                                cfg["llama_server_url"],
+                            )
+                        else:
+                            intent = extract_intent(
+                                transcript, cfg["locations"], cfg["actions"], llama_model
+                            )
                         if intent and "location" in intent and "action" in intent:
                             trigger_actuator(intent, cfg["command_center_url"])
                 finally:

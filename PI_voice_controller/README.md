@@ -123,6 +123,59 @@ Paths are resolved from the repo root (script location), not from your shell `cw
 python3 PI_voice_controller/voice_controller.py
 ```
 
+## TinyLlama Persistent Server Mode (faster)
+
+To avoid loading TinyLlama on every request, run a persistent `llama-server` and switch `voice_controller.py` to HTTP mode.
+
+1. In `PI_voice_controller/config.json`, set:
+   - `"llm_backend": "llama_server"`
+   - `"llama_server_url": "http://127.0.0.1:8081/v1/chat/completions"`
+2. Keep `llama_model_path` only if you still want CLI fallback; server mode does not use `llama-cli`.
+3. Use a small token cap for faster JSON replies:
+   - `PI_VOICE_LLAMA_MAX_TOKENS=24` (or `16` for maximum speed)
+
+Start persistent TinyLlama from repo root:
+
+```bash
+./llama.cpp/build/bin/llama-server \
+  -m ./models/tinyllama-1.1b-chat.Q4_K_M.gguf \
+  -ngl 0 \
+  -c 1024 \
+  --host 127.0.0.1 \
+  --port 8081
+```
+
+Then run the voice controller normally:
+
+```bash
+PI_VOICE_LLAMA_MAX_TOKENS=24 python3 PI_voice_controller/voice_controller.py
+```
+
+## Auto-start and Auto-restart with systemd
+
+This repo includes ready templates under `PI_voice_controller/systemd/`:
+
+- `tinyllama-server.service`
+- `voice-controller.service`
+
+Install them on the Pi without copying/moving files (adjust `<repo_root>` first):
+
+```bash
+REPO_ROOT=/home/cs5272smarthome/cs5272-smart-home
+sudo systemctl link "$REPO_ROOT/PI_voice_controller/systemd/tinyllama-server.service"
+sudo systemctl link "$REPO_ROOT/PI_voice_controller/systemd/voice-controller.service"
+sudo systemctl daemon-reload
+sudo systemctl enable tinyllama-server.service voice-controller.service
+sudo systemctl start tinyllama-server.service voice-controller.service
+```
+
+Check status:
+
+```bash
+systemctl status tinyllama-server.service
+systemctl status voice-controller.service
+```
+
 ## 🧪 Testing the Pipeline
 
 Before running the full system, test the individual components from the **repository root** (where `whisper.cpp/` and `llama.cpp/` live) to isolate any hardware or software issues.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Smart Home voice controller
+After=network-online.target tinyllama-server.service
+Wants=network-online.target
+Requires=tinyllama-server.service
+
+[Service]
+Type=simple
+User=cs5272smarthome
+WorkingDirectory=/home/cs5272smarthome/cs5272-smart-home
+Environment=PI_VOICE_LLAMA_MAX_TOKENS=24
+ExecStart=/home/cs5272smarthome/cs5272-smart-home/.venv/bin/python3 /home/cs5272smarthome/cs5272-smart-home/PI_voice_controller/voice_controller.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
