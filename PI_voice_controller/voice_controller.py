@@ -351,6 +351,78 @@ def _parse_first_intent_json(text: str):
     return None
 
 
+def _normalize_intent_fields(obj, locations, actions):
+    if not isinstance(obj, dict):
+        return None
+    loc = str(obj.get("location", "")).strip()
+    act = str(obj.get("action", "")).strip()
+    if not loc or not act:
+        return None
+    loc_l = loc.lower()
+    act_l = act.lower()
+    loc_map = {str(x).lower(): str(x) for x in locations}
+    act_map = {str(x).lower(): str(x) for x in actions}
+    if loc_l in loc_map and act_l in act_map:
+        return {"location": loc_map[loc_l], "action": act_map[act_l]}
+    return None
+
+
+def _extract_intent_from_text_fallback(text: str, locations, actions):
+    """
+    Fallback parser for small chat models that return prose instead of strict JSON.
+    Picks a known location and maps intent words to configured action names.
+    """
+    if not text:
+        return None
+    low = text.lower()
+
+    found_loc = None
+    for loc in locations:
+        key = str(loc).lower()
+        # Accept both underscore and space variants (e.g. living_room / living room).
+        if key in low or key.replace("_", " ") in low:
+            found_loc = str(loc)
+            break
+
+    on_words = ("switch on", "turn on", "lights on", "light on", "on")
+    off_words = ("switch off", "turn off", "lights off", "light off", "off")
+    left_words = ("left_once", "left once", "left")
+    right_words = ("right_once", "right once", "right")
+    demo_words = ("turn_demo", "demo")
+
+    selected_action = None
+    if any(w in low for w in right_words) or any(w in low for w in on_words):
+        selected_action = "right_once"
+    elif any(w in low for w in left_words) or any(w in low for w in off_words):
+        selected_action = "left_once"
+    elif any(w in low for w in demo_words):
+        selected_action = "turn_demo"
+
+    # If model output is noisy, use the transcript as a backup source.
+    if (found_loc is None or selected_action is None) and text:
+        pass
+
+    if found_loc is None or selected_action is None:
+        return None
+    normalized = _normalize_intent_fields(
+        {"location": found_loc, "action": selected_action}, locations, actions
+    )
+    return normalized
+
+
+def _extract_intent_from_model_output(output_text, transcript, locations, actions):
+    intent = _parse_first_intent_json(output_text)
+    normalized = _normalize_intent_fields(intent, locations, actions)
+    if normalized is not None:
+        return normalized
+
+    # Try prose from model output first, then fall back to transcript-only intent words.
+    prose_guess = _extract_intent_from_text_fallback(output_text or "", locations, actions)
+    if prose_guess is not None:
+        return prose_guess
+    return _extract_intent_from_text_fallback(transcript or "", locations, actions)
+
+
 def whisper_transcribe_cmd(model_path):
     return [
         _WHISPER_CLI,
@@ -652,7 +724,7 @@ def extract_intent(transcript, locations, actions, llama_model_path):
                 "rebuild llama.cpp if the binary is old (needs -ngl / --no-mmap)."
             )
 
-    intent = _parse_first_intent_json(output)
+    intent = _extract_intent_from_model_output(output, transcript, locations, actions)
     if intent is None:
         if debug_llm:
             print("Failed to parse LLM output into JSON.")
@@ -691,8 +763,9 @@ def extract_intent_via_server(transcript, locations, actions, server_url):
 
     payload = {
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
+        "temperature": 0.0,
         "max_tokens": max_tokens_i,
+        "response_format": {"type": "json_object"},
     }
     req = urllib.request.Request(
         server_url,
@@ -729,7 +802,7 @@ def extract_intent_via_server(transcript, locations, actions, server_url):
 
     tail_log = content[-1500:] if len(content) > 1500 else content
     print(f"LLM Output (tail): {tail_log!r}")
-    intent = _parse_first_intent_json(content)
+    intent = _extract_intent_from_model_output(content, transcript, locations, actions)
     if intent is None:
         dbg = content[-1200:] if len(content) > 1200 else content
         print("Failed to parse llama-server output into JSON.")
