@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="${1:-/home/cs5272smarthome/cs5272-smart-home}"
+REPO_ROOT="${1:-/home/cs5272smarthome/smarthome/cs5272-smart-home}"
 SYSTEMD_DIR="$REPO_ROOT/PI_voice_controller/systemd"
 
 echo "Linking services from: $SYSTEMD_DIR"

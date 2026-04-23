@@ -165,7 +165,7 @@ This repo includes ready templates under `PI_voice_controller/systemd/`:
 Install them on the Pi without copying/moving files (adjust `<repo_root>` first):
 
 ```bash
-REPO_ROOT=/home/cs5272smarthome/cs5272-smart-home
+REPO_ROOT=/home/cs5272smarthome/smarthome/cs5272-smart-home
 sudo systemctl link "$REPO_ROOT/PI_voice_controller/systemd/tinyllama-server.service"
 sudo systemctl link "$REPO_ROOT/PI_voice_controller/systemd/voice-controller.service"
 sudo systemctl daemon-reload
