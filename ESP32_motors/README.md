@@ -6,6 +6,14 @@ Use this folder if your toolchain fails on sketch paths with spaces.
 - Main file: `ESP32_motors.ino`
 - Behavior: immediate looping servo sequence with green LED start/end markers.
 
+## Dependencies
+
+You MUST install the `WiFiManager` library by tzapu before compiling. Using `arduino-cli`:
+```bash
+arduino-cli core update-index
+arduino-cli lib install "WiFiManager"
+```
+
 ## Compile
 From this folder:
 

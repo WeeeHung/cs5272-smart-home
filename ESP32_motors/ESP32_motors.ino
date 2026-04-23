@@ -2,13 +2,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiUdp.h>
+#include <WiFiManager.h>
 
 // SG90 servo signal pin (change if needed)
 static const int SERVO_PIN = 18;
 
-// Wi-Fi credentials (edit here for your network).
-static const char *WIFI_SSID = "dark";
-static const char *WIFI_PASSWORD = "wwwwwwww";
+// Configuration: loaded from /config.json on LittleFS
 
 // LED behavior options:
 // - If your board has a simple onboard LED, set LED_MODE_GPIO to 1 and choose LED_PIN.
@@ -39,7 +38,7 @@ unsigned long lastPresenceMs = 0;
 
 static const unsigned int PRESENCE_PORT = 4210;
 static const unsigned long PRESENCE_INTERVAL_MS = 5000UL;
-static const char* NODE_ID = "motor_b";
+static String nodeId = "motor_node";
 
 // Drive the status LED (green indicator) on boards with direct GPIO LED.
 void setGreenLed(bool on) {
@@ -174,6 +173,58 @@ bool isKnownCommand(const String &commandUpper) {
          commandUpper == "RIGHT" || commandUpper == "CENTER" || commandUpper == "STATUS";
 }
 
+// Extract a quoted JSON string value for "key" without extra dependencies (same style as command body parser).
+static String extractJsonStringValue(const String &body, const char *key) {
+  String quotedKey = "\"";
+  quotedKey += key;
+  quotedKey += "\"";
+  int keyPos = body.indexOf(quotedKey);
+  if (keyPos < 0) {
+    return "";
+  }
+  int colonPos = body.indexOf(':', keyPos + static_cast<int>(quotedKey.length()));
+  if (colonPos < 0) {
+    return "";
+  }
+  int i = colonPos + 1;
+  while (i < body.length()) {
+    const char c = body.charAt(i);
+    if (c != ' ' && c != '\t' && c != '\r' && c != '\n') {
+      break;
+    }
+    ++i;
+  }
+  if (i >= body.length() || body.charAt(i) != '"') {
+    return "";
+  }
+  const int firstQuote = i;
+  const int secondQuote = body.indexOf('"', firstQuote + 1);
+  if (secondQuote < 0) {
+    return "";
+  }
+  return body.substring(firstQuote + 1, secondQuote);
+}
+
+static bool loadNodeConfigFromLittleFS() {
+  if (!LittleFS.begin(false)) {
+    Serial.println("ERR: LittleFS mount failed — upload filesystem with data/config.json");
+    return false;
+  }
+  File f = LittleFS.open("/config.json", "r");
+  if (!f || f.isDirectory()) {
+    Serial.println("ERR: /config.json not found on LittleFS");
+    return false;
+  }
+  const String cfg = f.readString();
+  f.close();
+
+  String parsedNodeId = extractJsonStringValue(cfg, "node_id");
+  if (parsedNodeId.length() > 0) {
+    nodeId = parsedNodeId;
+  }
+  return true;
+}
+
 // Minimal parser for {"command":"..."} body without extra dependencies.
 String extractCommandFromJsonBody(const String &body) {
   const String key = "\"command\"";
@@ -203,7 +254,7 @@ String extractCommandFromJsonBody(const String &body) {
 // HTTP health endpoint for command-center discovery probes.
 void handleHealth() {
   String json = "{\"ok\":true,\"service\":\"esp32-motor-node\",\"node\":\"";
-  json += NODE_ID;
+  json += nodeId;
   json += "\",\"ip\":\"";
   json += WiFi.localIP().toString();
   json += "\"}";
@@ -253,7 +304,7 @@ void broadcastPresenceIfDue() {
   lastPresenceMs = now;
 
   String msg = "ESP32_PRESENCE node=";
-  msg += NODE_ID;
+  msg += nodeId;
   msg += " ip=";
   msg += WiFi.localIP().toString();
   msg += " port=80";
@@ -312,36 +363,35 @@ void setup() {
     setGreenLed(false);
   }
 
-  WiFi.mode(WIFI_STA);
-  Serial.print("WIFI: CONNECTING TO SSID=");
-  Serial.println(WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  const unsigned long wifiStartMs = millis();
-  int wifiAttempt = 0;
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStartMs) < 10000UL) {
-    wifiAttempt++;
-    Serial.print("WIFI_CONNECT_ATTEMPT=");
-    Serial.print(wifiAttempt);
-    Serial.print(", STATUS_CODE=");
-    Serial.println(WiFi.status());
-    delay(500);
+  loadNodeConfigFromLittleFS();
+
+  WiFiManager wm;
+  std::vector<const char *> menu = {"wifi", "info", "erase", "restart"};
+  wm.setMenu(menu);
+  wm.setConfigPortalTimeout(180); // 3 minutes timeout
+
+  String apName = "Homie_" + nodeId;
+  Serial.print("WIFI: Connecting or starting Captive Portal: ");
+  Serial.println(apName);
+
+  bool connected = wm.autoConnect(apName.c_str());
+  if (!connected) {
+    Serial.println("WIFI: Failed to connect and timeout occurred. Restarting...");
+    delay(3000);
+    ESP.restart();
   }
-  lastWifiStatus = WiFi.status();
-  if (lastWifiStatus == WL_CONNECTED) {
-    Serial.print("WIFI_STATUS: CONNECTED, IP=");
-    Serial.println(WiFi.localIP());
-    httpServer.on("/health", HTTP_GET, handleHealth);
-    httpServer.on("/command", HTTP_POST, handleCommand);
-    httpServer.on("/command", HTTP_GET, handleCommand);
-    httpServer.begin();
-    Serial.println("HTTP_SERVER: LISTENING_ON_PORT=80");
-    presenceUdp.begin(PRESENCE_PORT);
-    Serial.print("PRESENCE: UDP_BROADCAST_PORT=");
-    Serial.println(PRESENCE_PORT);
-  } else {
-    Serial.print("WIFI_STATUS: NOT_CONNECTED_AFTER_BOOT, CODE=");
-    Serial.println(lastWifiStatus);
-  }
+
+  lastWifiStatus = WL_CONNECTED;
+  Serial.print("WIFI_STATUS: CONNECTED, IP=");
+  Serial.println(WiFi.localIP());
+  httpServer.on("/health", HTTP_GET, handleHealth);
+  httpServer.on("/command", HTTP_POST, handleCommand);
+  httpServer.on("/command", HTTP_GET, handleCommand);
+  httpServer.begin();
+  Serial.println("HTTP_SERVER: LISTENING_ON_PORT=80");
+  presenceUdp.begin(PRESENCE_PORT);
+  Serial.print("PRESENCE: UDP_BROADCAST_PORT=");
+  Serial.println(PRESENCE_PORT);
 
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
