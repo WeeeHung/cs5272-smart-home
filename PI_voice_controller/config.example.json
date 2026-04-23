@@ -6,6 +6,8 @@
   "input_device_index": null,
   "whisper_model_path": null,
   "llama_model_path": null,
+  "llm_backend": "llama_cli",
+  "llama_server_url": "http://127.0.0.1:8081/v1/chat/completions",
   "wake_refractory_s": 2.5,
   "wake_threshold": 0.5,
   "wake_min_interval_s": 3.0,

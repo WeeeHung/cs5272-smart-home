@@ -44,6 +44,5 @@ arduino-cli monitor -p /dev/cu.usbmodemXXXX -c baudrate=115200
 
 ## Wiring
 - SG90 signal (orange/yellow) -> `GPIO18`
-- SG90 VCC (red) -> external `5V`
+- SG90 VCC (red) -> external `3V3`
 - SG90 GND (brown/black) -> external `GND`
-- ESP32 GND -> same external `GND` (common ground)

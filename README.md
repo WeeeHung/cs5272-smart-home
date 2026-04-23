@@ -1,10 +1,11 @@
 # CS5272 Smart Home (Offline Edge Actuator)
 
-This repo is a small end-to-end system with three cooperating parts:
+This repo is a small end-to-end system with three cooperating runtime parts (plus one optional persistent LLM service):
 
 - `PI_voice_controller/`: Raspberry Pi voice/intent pipeline (`voice_controller.py`)
 - `PI4_command_center/`: Raspberry Pi HTTP router + UDP presence/discovery (`server.py`)
 - `ESP32_motors/`: ESP32 actuator firmware (servo movement + HTTP endpoints)
+- `llama.cpp/build/bin/llama-server` (optional but recommended): persistent TinyLlama HTTP server used by `voice_controller.py` in `llama_server` mode for lower latency
 
 ## Connect to the Raspberry Pi
 
@@ -20,10 +21,64 @@ SSH using:
 ssh cs5272smarthome@cs5272-smart-home-ai.local
 ```
 
+## Build / Compile Instructions
+
+This section lists the minimum compile/build steps for each component.
+
+### 1) Python environment for Pi components
+
+From repo root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r PI_voice_controller/requirements.txt
+```
+
+For Raspberry Pi/Linux with Python 3.13, use the alternate instructions in `PI_voice_controller/README.md`.
+
+### 2) Build `whisper.cpp` and `llama.cpp` binaries
+
+From repo root (if not already built):
+
+```bash
+cmake -S whisper.cpp -B whisper.cpp/build
+cmake --build whisper.cpp/build -j
+cmake -S llama.cpp -B llama.cpp/build
+cmake --build llama.cpp/build -j
+```
+
+Expected binaries used by this project:
+
+- `whisper.cpp/build/bin/whisper-cli`
+- `llama.cpp/build/bin/llama-cli`
+- `llama.cpp/build/bin/llama-server` (for persistent server mode)
+
+Also ensure your GGUF model exists at one of:
+
+- `models/tinyllama-1.1b-chat.Q4_K_M.gguf`
+- `models/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf`
+
+### 3) Compile/upload ESP32 firmware
+
+From `ESP32_motors/`:
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default .
+arduino-cli board list
+arduino-cli upload --port <your_port> --fqbn 'esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default' .
+```
+
+If your board profile differs, adjust `--fqbn` accordingly. The detailed ESP32 commands are documented in `ESP32_motors/README.md`.
+
+### 4) Upload ESP32 config file to LittleFS
+
+Set Wi-Fi credentials in `ESP32_motors/data/config.json`, then upload that filesystem image so the file is available on ESP32 as `/config.json`.
+
 ## Repo Layout (what each folder contains)
 
 - `PI_voice_controller/`
-  - `voice_controller.py`: wake-word -> record -> whisper.cpp transcription -> llama.cpp JSON intent -> trigger PI4
+  - `voice_controller.py`: wake-word -> record -> whisper.cpp transcription -> TinyLlama JSON intent -> trigger PI4
   - `config.example.json`: example config (copy to `config.json` next to the script)
   - `models/`: bundled wake word model files (currently `hey_homie.*`)
   - `requirements*.txt`: Python dependencies
@@ -38,7 +93,26 @@ ssh cs5272smarthome@cs5272-smart-home-ai.local
   - `README.md`: build/upload notes
 - `TODO.md`: project TODOs
 
+Top-level files/folders commonly included in the submission zip:
+
+- `README.md` (compile + run guide)
+- `PI_voice_controller/`
+- `PI4_command_center/`
+- `ESP32_motors/`
+- `TODO.md`
+
 ## Current Communication Contracts (routes + payloads)
+
+## Current Runtime Architecture
+
+- Default/legacy path: `voice_controller.py` can run TinyLlama via per-request `llama-cli`.
+- Fast path (recommended): `voice_controller.py` calls persistent `llama-server` over `http://127.0.0.1:8081/v1/chat/completions`.
+- Backend switch is configured in `PI_voice_controller/config.json`:
+  - `llm_backend: "llama_cli" | "llama_server"`
+  - `llama_server_url` for server mode endpoint
+- Production persistence on Pi is handled by systemd services:
+  - `tinyllama-server.service` (persistent model process)
+  - `voice-controller.service` (wake-word + transcription + intent + trigger loop)
 
 ### 1) `PI_voice_controller` -> PI4 Command Center
 
@@ -101,6 +175,8 @@ All routes run on the PI4 server created by `PI4_command_center/server.py` (defa
    - defines:
      - `command_center_url` (must point to `http://<pi4>:8080/trigger-location`)
      - the allowed `locations` and `actions` for llama.cpp JSON parsing
+     - `llm_backend`: `llama_cli` (default) or `llama_server` (persistent HTTP backend)
+     - `llama_server_url`: endpoint used when `llm_backend` is `llama_server` (default `http://127.0.0.1:8081/v1/chat/completions`)
      - wake-word thresholds
 
 3. `ESP32_motors/data/config.json`
@@ -120,7 +196,10 @@ All routes run on the PI4 server created by `PI4_command_center/server.py` (defa
 4. Create at least one location mapping:
    - `POST /map-location` with `{"node":"motor_a","location":"living_room",...}`
 5. Start the voice controller:
-   - ensure `whisper.cpp/` and `llama.cpp/` and the models exist under the repo root (as expected by `voice_controller.py`)
+   - ensure `whisper.cpp/` and models exist under the repo root (as expected by `voice_controller.py`)
+   - optional faster path: run a persistent TinyLlama service first:
+     - `./llama.cpp/build/bin/llama-server -m ./models/tinyllama-1.1b-chat.Q4_K_M.gguf -ngl 0 -c 1024 --host 127.0.0.1 --port 8081`
+     - set `PI_voice_controller/config.json` -> `"llm_backend": "llama_server"`
    - `cd <repo_root>`
    - `cp PI_voice_controller/config.example.json PI_voice_controller/config.json`
-   - `python3 PI_voice_controller/voice_controller.py`
+   - `PI_VOICE_LLAMA_MAX_TOKENS=24 python3 PI_voice_controller/voice_controller.py`
