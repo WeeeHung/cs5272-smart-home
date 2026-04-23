@@ -1,10 +1,11 @@
 # CS5272 Smart Home (Offline Edge Actuator)
 
-This repo is a small end-to-end system with three cooperating parts:
+This repo is a small end-to-end system with three cooperating runtime parts (plus one optional persistent LLM service):
 
 - `PI_voice_controller/`: Raspberry Pi voice/intent pipeline (`voice_controller.py`)
 - `PI4_command_center/`: Raspberry Pi HTTP router + UDP presence/discovery (`server.py`)
 - `ESP32_motors/`: ESP32 actuator firmware (servo movement + HTTP endpoints)
+- `llama.cpp/build/bin/llama-server` (optional but recommended): persistent TinyLlama HTTP server used by `voice_controller.py` in `llama_server` mode for lower latency
 
 ## Connect to the Raspberry Pi
 
@@ -51,10 +52,12 @@ Expected binaries used by this project:
 
 - `whisper.cpp/build/bin/whisper-cli`
 - `llama.cpp/build/bin/llama-cli`
+- `llama.cpp/build/bin/llama-server` (for persistent server mode)
 
-Also ensure your GGUF model exists at:
+Also ensure your GGUF model exists at one of:
 
 - `models/tinyllama-1.1b-chat.Q4_K_M.gguf`
+- `models/tinyllama-1.1b-chat-v1.0-q4_k_m.gguf`
 
 ### 3) Compile/upload ESP32 firmware
 
@@ -75,7 +78,7 @@ Set Wi-Fi credentials in `ESP32_motors/data/config.json`, then upload that files
 ## Repo Layout (what each folder contains)
 
 - `PI_voice_controller/`
-  - `voice_controller.py`: wake-word -> record -> whisper.cpp transcription -> llama.cpp JSON intent -> trigger PI4
+  - `voice_controller.py`: wake-word -> record -> whisper.cpp transcription -> TinyLlama JSON intent -> trigger PI4
   - `config.example.json`: example config (copy to `config.json` next to the script)
   - `models/`: bundled wake word model files (currently `hey_homie.*`)
   - `requirements*.txt`: Python dependencies
@@ -99,6 +102,17 @@ Top-level files/folders commonly included in the submission zip:
 - `TODO.md`
 
 ## Current Communication Contracts (routes + payloads)
+
+## Current Runtime Architecture
+
+- Default/legacy path: `voice_controller.py` can run TinyLlama via per-request `llama-cli`.
+- Fast path (recommended): `voice_controller.py` calls persistent `llama-server` over `http://127.0.0.1:8081/v1/chat/completions`.
+- Backend switch is configured in `PI_voice_controller/config.json`:
+  - `llm_backend: "llama_cli" | "llama_server"`
+  - `llama_server_url` for server mode endpoint
+- Production persistence on Pi is handled by systemd services:
+  - `tinyllama-server.service` (persistent model process)
+  - `voice-controller.service` (wake-word + transcription + intent + trigger loop)
 
 ### 1) `PI_voice_controller` -> PI4 Command Center
 

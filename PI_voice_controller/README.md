@@ -7,7 +7,10 @@ A privacy-first, offline-managed hardware system designed to retrofit non-smart 
 The project is split into two main components:
 
 1. **The Central Brain (Raspberry Pi 4 - 8GB)**
-  - **Voice Controller (`voice_controller.py`):** Uses **openWakeWord** to listen for the custom wake word ("Hey Homie"), records audio, transcribes it using **whisper.cpp**, and extracts the user's intent (location and action) using **llama.cpp** (TinyLlama-1.1B).
+  - **Voice Controller (`voice_controller.py`):** Uses **openWakeWord** to listen for the custom wake word ("Hey Homie"), records audio, transcribes it using **whisper.cpp**, and extracts the user's intent (location and action) using TinyLlama.
+  - **TinyLlama backend modes:**
+    - `llama_cli` (default): launches `llama-cli` per request.
+    - `llama_server` (recommended): calls persistent `llama-server` over local HTTP (`/v1/chat/completions`) for lower latency.
   - **Command Center (`server.py`):** A lightweight Python HTTP server (Port 8080) that acts as the network router. It listens for UDP beacons from the actuators to dynamically track their IP addresses and forwards the LLM's JSON commands to the correct physical device.
 2. **The Actuator Nodes (ESP32)**
   - **Firmware (`ESP32_motors.ino`):** Connects to the local Wi-Fi, constantly broadcasts a UDP presence beacon (Port 4210) to the Pi, and hosts a local HTTP server (Port 80).
@@ -106,7 +109,7 @@ The voice pipeline listens for **“Hey Homie”** using a custom OpenWakeWord m
 - **Naming:** The model basename (without `.tflite`) must match the key used in predictions. The code uses `WAKE_WORD_NAME = "hey_homie"`, so the file should be named `hey_homie.tflite`. If you replace it with another OpenWakeWord export, rename the file or update `WAKE_WORD_NAME` to match.
 - **Detection threshold:** Wake detections fire when the score for `hey_homie` is above `wake_threshold` in `config.json` (default `0.5`); raise it if you get false triggers, or lower it slightly if it misses the phrase. After each command, OpenWakeWord’s internal buffer is advanced every chunk while scores are ignored for `wake_refractory_s` seconds (default `2.5`); use `wake_min_interval_s` (default `3`) as a backstop between activations, or set `wake_silence_flush_s` to feed a short silence flush after reopening the mic if a device still double-fires.
 
-Place **whisper.cpp**, **llama.cpp**, and the **tinyllama-1.1b-chat.Q4_K_M.gguf** model under the **repository root** (`cs5272-smart-home/`), for example by copying them from `~/smarthome/` into the repo:
+Place **whisper.cpp**, **llama.cpp**, and a TinyLlama GGUF under the **repository root** (`cs5272-smart-home/`), for example by copying them from `~/smarthome/` into the repo:
 
 ```
 cs5272-smart-home/
@@ -114,6 +117,7 @@ cs5272-smart-home/
   llama.cpp/            # build → build/bin/llama-cli
   models/
     tinyllama-1.1b-chat.Q4_K_M.gguf
+    # or tinyllama-1.1b-chat-v1.0-q4_k_m.gguf
   PI_voice_controller/
 ```
 
