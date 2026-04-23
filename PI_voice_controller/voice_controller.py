@@ -51,7 +51,7 @@ _LLAMA_MODEL_CANDIDATES = (
 )
 
 _VOICE_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "config.json")
-_DEFAULT_LOCATIONS = ["living_room", "bedroom"]
+_DEFAULT_LOCATIONS = ["living_room", "kitchen"]
 _DEFAULT_ACTIONS = ["turn_demo", "left_once", "right_once"]
 
 _DEFAULT_WAKE_REFRACTORY_S = 2.5
@@ -60,6 +60,8 @@ _DEFAULT_WAKE_MIN_INTERVAL_S = 3.0
 _DEFAULT_WAKE_SILENCE_FLUSH_S = 0.0
 # llama-cli on Pi CPU can be slow; avoid hanging forever if REPL or runaway generation.
 _LLAMA_SUBPROCESS_TIMEOUT_S = 180
+# Max new tokens for intent JSON; one line is ~15–25 tokens but small models add chatter—override with PI_VOICE_LLAMA_MAX_TOKENS.
+_LLAMA_MAX_NEW_TOKENS_DEFAULT = 64
 
 COMMAND_CENTER_URL = "http://127.0.0.1:8080/trigger-location"
 
@@ -261,6 +263,7 @@ def llama_infer_cmd(model_path, schema_str=None):
     """
     Flags tuned for Pi / embedded Linux: CPU-only, modest ctx, optional no-mmap (SD/mmap quirks).
     Set PI_VOICE_LLAMA_MMAP=1 to omit --no-mmap (e.g. older llama-cli without the flag).
+    Set PI_VOICE_LLAMA_MAX_TOKENS to cap new tokens (default see _LLAMA_MAX_NEW_TOKENS_DEFAULT).
     Uses --single-turn so llama-cli exits after one -p reply (default is interactive REPL).
     """
     cmd = [
@@ -277,9 +280,8 @@ def llama_infer_cmd(model_path, schema_str=None):
             "-ngl",
             "0",
             "-n",
-            # Tiny JSON output should fit in a small budget; smaller -n reduces
-            # the chance the model starts "helpfully" generating extra text/code.
-            "32",
+            os.environ.get("PI_VOICE_LLAMA_MAX_TOKENS", "").strip()
+            or str(_LLAMA_MAX_NEW_TOKENS_DEFAULT),
             "--temp",
             "0.1",
             # Keep output pipe-friendly (helps subprocess capture).
@@ -540,20 +542,18 @@ def extract_intent(transcript, locations, actions, llama_model_path, retry_count
 
     loc_str = ", ".join(str(x) for x in locations)
     act_str = ", ".join(str(x) for x in actions)
-    prompt = f"""You are a smart home parser.
-Given a user command, output JSON ONLY.
-
-Allowed locations: {loc_str}
-Allowed actions: {act_str}
-
-Output rules (follow exactly):
-- Output exactly ONE single-line JSON object with exactly these keys: "location" and "action".
-- Values must be selected from the allowed lists above.
-- If you cannot map the command to exactly one allowed location and one allowed action, output NOTHING (empty response).
-- Do not output markdown, code fences, backticks, explanations, or any other text (no Python code).
-
-Command: "{transcript}"
-JSON:"""
+    # Short prompt: chat models copy multi-line "Command:/JSON:" templates and burn the -n token budget.
+    prompt = (
+        f'Reply with ONE line only: a JSON object with keys "location" and "action". '
+        f"First character must be {{ . Last character must be }} . No other text. "
+        f"locations: [{loc_str}]. actions: [{act_str}]. "
+        f'IMPORTANT: switch off / lights off -> "left_once"; switch on / lights on -> "right_once". '
+        f'Example input 1: Switch off the light in the living room'
+        f'Example output 1: {{"location":"living_room","action":"left_once"}} '
+        f'Example input 2: Switch on the light in the kitchen'
+        f'Example output 2: {{"location":"kitchen","action":"right_once"}} '
+        f"Command: {json.dumps(transcript)}\n"
+    )
 
     cmd = llama_infer_cmd(llama_model_path, schema_str) + [prompt]
     try:
@@ -583,7 +583,7 @@ JSON:"""
     output = combined.replace(prompt, "").strip()
     if not output and combined:
         output = combined
-    debug_llm = os.environ.get("PI_VOICE_DEBUG_LLM", "").strip().lower() not in ("", "0", "false")
+    debug_llm = True
     if debug_llm:
         tail_log = output[-1500:] if len(output) > 1500 else output
         print(f"LLM Output (tail): {tail_log!r}" if tail_log else "LLM Output: (empty)")

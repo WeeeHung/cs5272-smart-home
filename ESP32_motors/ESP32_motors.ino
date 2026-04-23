@@ -1,6 +1,4 @@
 #include <ESP32Servo.h>
-#include <FS.h>
-#include <LittleFS.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiUdp.h>
