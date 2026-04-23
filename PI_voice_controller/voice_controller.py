@@ -56,6 +56,8 @@ _DEFAULT_WAKE_REFRACTORY_S = 2.5
 _DEFAULT_WAKE_THRESHOLD = 0.5
 _DEFAULT_WAKE_MIN_INTERVAL_S = 3.0
 _DEFAULT_WAKE_SILENCE_FLUSH_S = 0.0
+_MIC_REOPEN_MAX_ATTEMPTS = 5
+_MIC_REOPEN_BASE_DELAY_S = 0.4
 # llama-cli on Pi CPU can be slow; avoid hanging forever if REPL or runaway generation.
 _LLAMA_SUBPROCESS_TIMEOUT_S = 180
 # Max new tokens for intent JSON; one line is ~15–25 tokens but small models add chatter—override with PI_VOICE_LLAMA_MAX_TOKENS.
@@ -403,6 +405,37 @@ def open_mic_stream(p, device_index, sample_rate, frames_per_buffer):
     if device_index is not None:
         kw["input_device_index"] = device_index
     return p.open(**kw)
+
+
+def acquire_mic_stream_with_retries(p, cfg, device_index, sample_rate, frames_per_buffer, context):
+    """
+    Open a microphone stream with retry + re-detection.
+    ALSA/PortAudio can temporarily report -9985 right after close/reopen cycles.
+    """
+    idx = device_index
+    sr = sample_rate
+    read_n = frames_per_buffer
+    last_err = None
+    for attempt in range(1, _MIC_REOPEN_MAX_ATTEMPTS + 1):
+        try:
+            stream = open_mic_stream(p, idx, sr, read_n)
+            if attempt > 1:
+                print(
+                    f"{context}: microphone recovered on attempt {attempt} "
+                    f"(device={idx}, rate={sr} Hz)."
+                )
+            return stream, idx, sr, read_n
+        except OSError as e:
+            last_err = e
+            print(f"{context}: mic open failed (attempt {attempt}/{_MIC_REOPEN_MAX_ATTEMPTS}): {e}")
+            try:
+                idx, sr = resolve_input_device_and_rate(p, cfg)
+                read_n = max(1, int(round(CHUNK_SIZE * sr / AUDIO_RATE)))
+            except Exception as resolve_exc:
+                print(f"{context}: input re-detect failed: {resolve_exc}")
+            if attempt < _MIC_REOPEN_MAX_ATTEMPTS:
+                time.sleep(_MIC_REOPEN_BASE_DELAY_S * attempt)
+    raise RuntimeError(f"{context}: microphone unavailable after retries (last: {last_err})") from last_err
 
 
 def flush_openwakeword_with_silence(oww_model, mic_stream, read_n, duration_s):
@@ -769,7 +802,9 @@ def main():
     try:
         input_dev, capture_rate = resolve_input_device_and_rate(p, cfg)
         read_n = max(1, int(round(CHUNK_SIZE * capture_rate / AUDIO_RATE)))
-        mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
+        mic_stream, input_dev, capture_rate, read_n = acquire_mic_stream_with_retries(
+            p, cfg, input_dev, capture_rate, read_n, "startup"
+        )
 
         print(f"Waiting for wake word 'hey homie'...")
 
@@ -829,7 +864,14 @@ def main():
                             trigger_actuator(intent, cfg["command_center_url"])
                 finally:
                     print(f"\nWaiting for wake word 'hey homie'...")
-                    mic_stream = open_mic_stream(p, input_dev, capture_rate, read_n)
+                    while mic_stream is None:
+                        try:
+                            mic_stream, input_dev, capture_rate, read_n = acquire_mic_stream_with_retries(
+                                p, cfg, input_dev, capture_rate, read_n, "wake-loop-reopen"
+                            )
+                        except RuntimeError as reopen_err:
+                            print(f"wake-loop-reopen: will keep retrying: {reopen_err}")
+                            time.sleep(1.5)
                     flush_openwakeword_with_silence(oww_model, mic_stream, read_n, wake_flush_s)
                     wake_refractory_until = time.monotonic() + wake_ref_s
 
