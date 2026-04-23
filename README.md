@@ -20,6 +20,58 @@ SSH using:
 ssh cs5272smarthome@cs5272-smart-home-ai.local
 ```
 
+## Build / Compile Instructions
+
+This section lists the minimum compile/build steps for each component.
+
+### 1) Python environment for Pi components
+
+From repo root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r PI_voice_controller/requirements.txt
+```
+
+For Raspberry Pi/Linux with Python 3.13, use the alternate instructions in `PI_voice_controller/README.md`.
+
+### 2) Build `whisper.cpp` and `llama.cpp` binaries
+
+From repo root (if not already built):
+
+```bash
+cmake -S whisper.cpp -B whisper.cpp/build
+cmake --build whisper.cpp/build -j
+cmake -S llama.cpp -B llama.cpp/build
+cmake --build llama.cpp/build -j
+```
+
+Expected binaries used by this project:
+
+- `whisper.cpp/build/bin/whisper-cli`
+- `llama.cpp/build/bin/llama-cli`
+
+Also ensure your GGUF model exists at:
+
+- `models/tinyllama-1.1b-chat.Q4_K_M.gguf`
+
+### 3) Compile/upload ESP32 firmware
+
+From `ESP32_motors/`:
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default .
+arduino-cli board list
+arduino-cli upload --port <your_port> --fqbn 'esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,UploadMode=default' .
+```
+
+If your board profile differs, adjust `--fqbn` accordingly. The detailed ESP32 commands are documented in `ESP32_motors/README.md`.
+
+### 4) Upload ESP32 config file to LittleFS
+
+Set Wi-Fi credentials in `ESP32_motors/data/config.json`, then upload that filesystem image so the file is available on ESP32 as `/config.json`.
+
 ## Repo Layout (what each folder contains)
 
 - `PI_voice_controller/`
@@ -37,6 +89,14 @@ ssh cs5272smarthome@cs5272-smart-home-ai.local
   - `data/config.json`: Wi-Fi credentials that must be uploaded into ESP32 LittleFS as `/config.json`
   - `README.md`: build/upload notes
 - `TODO.md`: project TODOs
+
+Top-level files/folders commonly included in the submission zip:
+
+- `README.md` (compile + run guide)
+- `PI_voice_controller/`
+- `PI4_command_center/`
+- `ESP32_motors/`
+- `TODO.md`
 
 ## Current Communication Contracts (routes + payloads)
 
